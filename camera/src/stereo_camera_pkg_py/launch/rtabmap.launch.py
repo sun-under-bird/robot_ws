@@ -1,0 +1,147 @@
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.conditions import IfCondition
+from launch_ros.actions import Node
+
+from ament_index_python.packages import get_package_share_directory
+
+
+def generate_launch_description():
+    pkg_stereo_image_proc = get_package_share_directory('stereo_image_proc')
+    stereo_image_proc_launch = PathJoinSubstitution(
+        [pkg_stereo_image_proc, 'launch', 'stereo_image_proc.launch.py']
+    )
+    base_frame = LaunchConfiguration('base_frame')
+    use_viz = LaunchConfiguration('use_viz')
+    approx_sync = LaunchConfiguration('approx_sync')
+    baseline = LaunchConfiguration('baseline')
+
+    rtabmap_slam_params = {
+            'frame_id': base_frame,
+	    'subscribe_rgbd': False,
+	    'subscribe_stereo': True,
+	    'subscribe_odom_info': True,
+	    'use_sim_time': False,
+	    'approx_sync': approx_sync,
+	    'approx_sync_max_interval': 0.05,
+	    'queue_size': 10,
+	    'wait_for_transform': 0.2,
+	    'tf_delay': 0.2,
+	    'Rtabmap/ImagesAlreadyRectified': 'true',
+	    'Rtabmap/DetectionRate': '1',
+	    'Reg/Force3DoF': 'true',
+	    'Kp/MaxFeatures': '1000',
+	    'GFTT/MinDistance': '5',
+	    'GFTT/QualityLevel': '0.00001',
+	    'Stereo/MaxDisparity':'128',
+	    'Grid/RangeMax':'3',
+            'Grid/GroundIsObstacle':'false',
+	    'Grid/CellSize':'0.05',
+	    'Grid/RayTracing': 'true',
+	    'sync_queue_size': 50,
+	}
+
+    rtabmap_odom_params = {
+            'frame_id': base_frame,
+	    # stereo mode
+	    'subscribe_rgbd': False,
+	    'subscribe_stereo': True,
+	    'subscribe_odom_info': True,
+	    'subscrib_odom':True,
+	    'use_sim_time': False,
+	    'approx_sync': approx_sync,
+	    'approx_sync_max_interval': 0.005,
+	    'sync_queue_size': 5,
+	    'wait_for_transform': 0.2,
+	    'tf_delay': 0.2,
+	    'Rtabmap/ImagesAlreadyRectified': 'true',
+	    'Odom/Strategy': '0', 
+            'Odom/GuessMotion':'true',
+	    'Vis/EstimationType': '1', 
+	    'Vis/MinInliers': '12',
+	    'Vis/MaxFeatures': '1200',
+	    'OdomF2M/MaxSize': '1000',
+	    'GFTT/MinDistance': '5',
+	    'GFTT/QualityLevel': '0.00001',
+	    'Stereo/MaxDisparity':'128',
+	    'Odom/ResetCountdown': '1',
+	}
+
+    
+    remaps = [
+        ('left/image_rect',   '/stereo/left/camera/image_rect'),
+        ('right/image_rect',  '/stereo/right/camera/image_rect'),
+        ('left/camera_info',  '/stereo/left/camera/camera_info'),
+        ('right/camera_info', '/stereo/right/camera/camera_info'),
+        ('odom',              '/vo'),
+    ]
+
+
+    return LaunchDescription([
+        DeclareLaunchArgument('base_frame', default_value='base_footprint'),
+        DeclareLaunchArgument('use_viz', default_value='true'),
+        DeclareLaunchArgument('approx_sync', default_value='true'),
+        DeclareLaunchArgument('baseline', default_value='-0.05'), 
+
+        
+                                
+        Node(
+	   package='image_proc',
+	   executable='rectify_node',
+	   name='rectify_left',
+	   namespace='/stereo/left/camera',
+	   remappings=[
+	      ('image', '/stereo/left/camera/image_mono'),
+	      ('camera_info', '/stereo/left/camera/camera_info'),
+	      ('image_rect','/stereo/left/camera/image_rect')]
+        ),  
+
+
+        Node(
+           package='image_proc',
+           executable='rectify_node',
+           name='rectify_right',
+           namespace='/stereo/right/camera',
+           remappings=[
+            ('image', '/stereo/right/camera/image_mono'),
+            ('camera_info', '/stereo/right/camera/camera_info'),
+            ('image_rect','/stereo/right/camera/image_rect'),]
+        ),
+        
+        # stereo_odometry
+        Node(
+            package='rtabmap_odom',
+            executable='stereo_odometry',
+            name='stereo_odometry',
+            output='screen',
+            parameters=[rtabmap_odom_params],
+            remappings=remaps
+        ),
+
+        # rtabmap
+        Node(
+            package='rtabmap_slam',
+            executable='rtabmap',
+            name='rtabmap',
+            output='screen',
+            parameters=[{"odometry_node_name": 'stereo_odometry'},rtabmap_slam_params],
+            remappings=remaps,
+            arguments=['-d']
+        ),
+
+        # rtabmap_viz
+        Node(
+            package='rtabmap_viz',
+            executable='rtabmap_viz',
+            name='rtabmap_viz',
+            output='screen',
+            condition=IfCondition(use_viz),
+            parameters=[rtabmap_slam_params, {'odometry_node_name': 'stereo_odometry'}],
+            remappings=remaps
+        ),
+        
+ 
+    ])
+
