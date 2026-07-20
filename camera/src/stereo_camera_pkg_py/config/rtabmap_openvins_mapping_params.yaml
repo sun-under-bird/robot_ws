@@ -1,7 +1,4 @@
 # RTAB-Map + OpenVINS stereo-inertial mapping template for ROS2 Humble.
-# 这一版把 RTAB-Map 源码暴露的 OdomOpenVINS/* 参数全部列出。
-# 注意：带 "/" 的参数是 RTAB-Map core 参数，通常用字符串更稳。
-
 openvins_stereo_odometry:
   ros__parameters:
     # ===== ROS wrapper / TF / sync =====
@@ -14,7 +11,7 @@ openvins_stereo_odometry:
     subscribe_imu: true
     approx_sync: true
     approx_sync_max_interval: 0.1
-    queue_size: 30
+    sync_queue_size: 30
     qos: 2
     qos_image: 2
     qos_camera_info: 2
@@ -106,18 +103,17 @@ openvins_stereo_odometry:
     "OdomOpenVINS/ZUPTOnlyAtBeginning": "false"
 
     # ===== OpenVINS IMU / visual measurement noise =====
-    # 这些必须按 IMU datasheet 或 Allan 方差结果替换。
-    "OdomOpenVINS/AccelerometerNoiseDensity": "0.01"
-    "OdomOpenVINS/AccelerometerRandomWalk": "0.001"
-    "OdomOpenVINS/GyroscopeNoiseDensity": "0.001"
-    "OdomOpenVINS/GyroscopeRandomWalk": "0.0001"
+    # 与本次Kalibr联合标定使用的wit_imu.yaml保持一致。
+    "OdomOpenVINS/AccelerometerNoiseDensity": "0.02"
+    "OdomOpenVINS/AccelerometerRandomWalk": "0.002"
+    "OdomOpenVINS/GyroscopeNoiseDensity": "0.0015"
+    "OdomOpenVINS/GyroscopeRandomWalk": "0.00015"
     "OdomOpenVINS/UpMSCKFSigmaPx": "1.0"
     "OdomOpenVINS/UpMSCKFChi2Multiplier": "1.0"
     "OdomOpenVINS/UpSLAMSigmaPx": "1.0"
     "OdomOpenVINS/UpSLAMChi2Multiplier": "1.0"
 
     # ===== image handling =====
-    # 如果你的输入已经是 image_rect，保持 true；如果输入 raw 图，让 RTAB-Map 根据 CameraInfo 去畸变。
     "Rtabmap/ImagesAlreadyRectified": "true"
 
 rtabmap:
@@ -134,15 +130,19 @@ rtabmap:
 
     # 使用双目图像建图，不使用深度相机。
     subscribe_stereo: true
+    subscribe_rgb: false
     subscribe_rgbd: false
     subscribe_depth: false
+    # 对比版：保留左右目图像，由RTAB-Map按需生成深度。
+    # false可避免把较激进的SGBM稠密深度直接写入所有地图节点。
+    stereo_to_depth: false
     subscribe_scan: false
     subscribe_scan_cloud: false
     subscribe_odom_info: true
     subscribe_imu: true
     approx_sync: true
     approx_sync_max_interval: 0.1
-    queue_size: 30
+    sync_queue_size: 30
     qos: 2
     qos_image: 2
     qos_camera_info: 2
@@ -231,8 +231,7 @@ rtabmap:
     "Kp/RoiRatios": "0.0 0.0 0.0 0.0"
 
     # ===== graph optimizer =====
-    # 2=GTSAM；如果你的 RTAB-Map 没编 GTSAM，改 1=g2o。
-    "Optimizer/Strategy": "2"
+    "Optimizer/Strategy": "1"
     "Optimizer/Iterations": "20"
     "Optimizer/Epsilon": "0.00001"
     "Optimizer/Robust": "false"
@@ -240,16 +239,37 @@ rtabmap:
     # VIO 场景建议 0.1~0.3；若图优化出现姿态拉扯，先降到 0。
     "Optimizer/GravitySigma": "0.3"
 
+    # ===== dense stereo depth（低噪点对比版） =====
+    # 0=StereoBM。它在弱纹理区域更倾向于不输出深度，点云更稀疏但飞点较少。
+    "Stereo/DenseStrategy": "0"
+    # 15x15窗口牺牲物体边缘细节，以换取比5x5 SGBM更稳定的视差块。
+    "StereoBM/BlockSize": "15"
+    "StereoBM/MinDisparity": "0"
+    # 当前fx约314、基线约49.4 mm，96视差已经覆盖约0.16 m以上范围。
+    "StereoBM/NumDisparities": "96"
+    "StereoBM/PreFilterSize": "9"
+    "StereoBM/PreFilterCap": "31"
+    "StereoBM/UniquenessRatio": "20"
+    "StereoBM/TextureThreshold": "10"
+    "StereoBM/SpeckleWindowSize": "200"
+    "StereoBM/SpeckleRange": "2"
+    "StereoBM/Disp12MaxDiff": "1"
+
     # ===== occupancy grid from stereo =====
     "RGBD/CreateOccupancyGrid": "true"
     "Grid/Sensor": "1"
     "Grid/CellSize": "0.05"
-    "Grid/RangeMin": "0.2"
-    "Grid/RangeMax": "5.0"
+    # 当前约49.4 mm基线在3 m外深度误差增长很快，先保留可靠近场点云。
+    "Grid/RangeMin": "0.3"
+    "Grid/RangeMax": "3.0"
+    # 4与纯双目配置默认值一致；相对2会将每帧点数降低到约四分之一。
     "Grid/DepthDecimation": "4"
     "Grid/PreVoxelFiltering": "true"
-    "Grid/3D": "false"
-    "Grid/RayTracing": "false"
+    # 删除孤立飞点；0.1/5与刚才纯双目测试中实际生效的参数一致。
+    "Grid/NoiseFilteringRadius": "0.1"
+    "Grid/NoiseFilteringMinNeighbors": "5"
+    "Grid/3D": "true"
+    "Grid/RayTracing": "true"
     "Grid/NormalsSegmentation": "true"
     "Grid/MaxGroundAngle": "45"
     "Grid/NormalK": "20"
@@ -275,7 +295,7 @@ rtabmap_viz:
     subscribe_stereo: true
     subscribe_odom_info: true
     approx_sync: true
-    queue_size: 30
+    sync_queue_size: 30
     qos: 2
     qos_image: 2
     qos_camera_info: 2

@@ -31,13 +31,13 @@ def generate_launch_description():
 	    'tf_delay': 0.2,
 	    'Rtabmap/ImagesAlreadyRectified': 'true',
 	    'Rtabmap/DetectionRate': '1',
-	    'Reg/Force3DoF': 'true',
+	    'Reg/Force3DoF': 'false',
 	    'Kp/MaxFeatures': '1000',
-	    'GFTT/MinDistance': '5',
-	    'GFTT/QualityLevel': '0.00001',
+	    'GFTT/MinDistance': '10',
+	    'GFTT/QualityLevel': '0.0001',
 	    'Stereo/MaxDisparity':'128',
 	    'Grid/RangeMax':'3',
-            'Grid/GroundIsObstacle':'false',
+        'Grid/GroundIsObstacle':'false',
 	    'Grid/CellSize':'0.05',
 	    'Grid/RayTracing': 'true',
 	    'sync_queue_size': 50,
@@ -63,8 +63,8 @@ def generate_launch_description():
 	    'Vis/MinInliers': '12',
 	    'Vis/MaxFeatures': '1200',
 	    'OdomF2M/MaxSize': '1000',
-	    'GFTT/MinDistance': '5',
-	    'GFTT/QualityLevel': '0.00001',
+	    'GFTT/MinDistance': '10',
+	    'GFTT/QualityLevel': '0.0001',
 	    'Stereo/MaxDisparity':'128',
 	    'Odom/ResetCountdown': '1',
 	}
@@ -80,7 +80,7 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        DeclareLaunchArgument('base_frame', default_value='base_footprint'),
+        DeclareLaunchArgument('base_frame', default_value='camera_link'),
         DeclareLaunchArgument('use_viz', default_value='true'),
         DeclareLaunchArgument('approx_sync', default_value='true'),
         DeclareLaunchArgument('baseline', default_value='-0.05'), 

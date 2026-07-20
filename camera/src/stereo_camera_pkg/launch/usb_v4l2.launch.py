@@ -65,7 +65,7 @@ def _launch_setup(context, *args, **kwargs):
 # 生成 launch 描述，并声明所有可覆盖参数。
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("video_device", default_value="/dev/video0"),
+        DeclareLaunchArgument("video_device", default_value="/dev/video2"),
 
         DeclareLaunchArgument("image_width", default_value="1280"),
         DeclareLaunchArgument("image_height", default_value="480"),

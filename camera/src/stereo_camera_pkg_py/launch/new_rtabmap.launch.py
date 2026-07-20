@@ -29,7 +29,7 @@ def generate_launch_description():
 
         'Rtabmap/ImagesAlreadyRectified': 'true',
         'Rtabmap/DetectionRate': '1',
-        'Reg/Force3DoF': 'true',
+        'Reg/Force3DoF': 'false',
 
         'Kp/MaxFeatures': '1000',
         'Kp/NndrRatio': '0.75',
@@ -42,9 +42,10 @@ def generate_launch_description():
         'qos_image':2,
         'Grid/RangeMax':'4',
         'Grid/NoiseFilteringRadius': '0.15',
-'Grid/NoiseFilteringMinNeighbors': '8',
-    'Grid/NoiseFilteringRadius': '0.1',
-    'Grid/NoiseFilteringMinNeighbors': '5',
+        'Grid/NoiseFilteringMinNeighbors': '8',
+        'Grid/NoiseFilteringRadius': '0.1',
+        'Grid/NoiseFilteringMinNeighbors': '5',
+        'Stereo/DenseStrategy': '1'
 
 	}
 
@@ -77,14 +78,15 @@ def generate_launch_description():
          'Grid/RayTracing': 'true',
         'Kp/NndrRatio':'0.75',
         'Stereo/MaxDisparity':'128',
+        'Stereo/DenseStrategy': '1'
 	}
 
     
     remaps = [
         ('left/image_rect',   '/stereo/left/camera/image_rect'),
         ('right/image_rect',  '/stereo/right/camera/image_rect'),
-        ('left/camera_info',  '/stereo/left/camera/camera_info'),
-        ('right/camera_info', '/stereo/right/camera/camera_info'),
+        ('left/camera_info',  '/cam0/camera_info'),
+        ('right/camera_info', '/cam1/camera_info'),
         ('odom',              '/vo'),
     ]
 
@@ -92,39 +94,37 @@ def generate_launch_description():
         DeclareLaunchArgument('base_frame', default_value='camera_link'),
         DeclareLaunchArgument('use_viz', default_value='true'),
         DeclareLaunchArgument('approx_sync', default_value='true'),
-        DeclareLaunchArgument('baseline', default_value='-0.0518'), 
-
-        # TF
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_cam_link_left',
-            arguments=['0', '0', '0', '0', '0', '0', '1', 'camera_link', 'left_camera']
-        ),
-
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_cam_link_right',
-            arguments=['0', baseline, '0', '0', '0', '0', '1', 'camera_link', 'right_camera']
-        ),
-
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_left_optical',
-            arguments=['0', '0', '0', '-1.570796', '0', '-1.570796',
-                       'left_camera', 'camera_left_frame']
-        ),
-
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='tf_right_optical',
-            arguments=['0', '0', '0', '-1.570796', '0', '-1.570796',
-                       'right_camera', 'camera_right_frame']
-        ),
+        DeclareLaunchArgument('baseline', default_value='-0.05'),
         
+	Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_cam_link_left',
+        arguments=['0.01', '0.025', '0.087', '0', '0', '0', '1', 'camera_link', 'left_camera']
+	),
+
+	Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_cam_link_right',
+        arguments=['0.01', '-0.025', '0.087', '0', '0', '0', '1', 'camera_link', 'right_camera']
+  	),
+
+	Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_left_optical',
+        arguments=['0', '0', '0', '-1.570796', '0', '-1.570796',
+                   'left_camera', 'cam0']
+  	),
+
+	Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='tf_right_optical',
+        arguments=['0', '0', '0', '-1.570796', '0', '-1.570796',
+                   'right_camera', 'cam1']
+    	),
                         
         Node(
 	   package='image_proc',
@@ -132,8 +132,8 @@ def generate_launch_description():
 	   name='rectify_left',
 	   namespace='/stereo/left/camera',
 	   remappings=[
-	      ('image', '/stereo/left/camera/image_mono'),
-	      ('camera_info', '/stereo/left/camera/camera_info'),
+	      ('image', '/cam0/image_raw'),
+	      ('camera_info', '/cam0/camera_info'),
 	      ('image_rect','/stereo/left/camera/image_rect')]
         ),  
 
@@ -144,8 +144,8 @@ def generate_launch_description():
            name='rectify_right',
            namespace='/stereo/right/camera',
            remappings=[
-            ('image', '/stereo/right/camera/image_mono'),
-            ('camera_info', '/stereo/right/camera/camera_info'),
+            ('image', '/cam1/image_raw'),
+            ('camera_info', '/cam1/camera_info'),
             ('image_rect','/stereo/right/camera/image_rect'),]
         ),
         

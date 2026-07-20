@@ -22,8 +22,8 @@ public:
         right_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("/stereo/right/camera/camera_info", qos);
 
         std::string pkg_share = ament_index_cpp::get_package_share_directory("stereo_camera_pkg");
-        left_info_ = loadCameraInfo(pkg_share + "/config/left_1.yaml");
-        right_info_ = loadCameraInfo(pkg_share + "/config/right_1.yaml");
+        left_info_ = loadCameraInfo(pkg_share + "/config/left.yaml");
+        right_info_ = loadCameraInfo(pkg_share + "/config/right.yaml");
 
         // left_info_ = loadCameraInfo(pkg_share + "/config/left_dj.yaml");
         // right_info_ = loadCameraInfo(pkg_share + "/config/right_dj.yaml");
@@ -68,11 +68,6 @@ private:
 
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
-
-        if ((frame_count_++ % 2) != 0)
-        {
-            return;
-        }
 
         cv::Mat frame;
 

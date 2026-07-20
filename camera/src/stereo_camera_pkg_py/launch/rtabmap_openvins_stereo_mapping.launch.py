@@ -71,8 +71,12 @@ def generate_launch_description():
             default_value="/camera/camera/infra2/camera_info_kalibr",
             description="右目 CameraInfo 话题。",
         ),
-        DeclareLaunchArgument("imu_topic", default_value="/camera/camera/imu", description="IMU 话题。"),
-        DeclareLaunchArgument("odom_topic", default_value="/odom", description="OpenVINS 输出里程计话题。"),
+        DeclareLaunchArgument(
+            "imu_topic", default_value="/camera/camera/imu", description="IMU 话题。"
+        ),
+        DeclareLaunchArgument(
+            "odom_topic", default_value="/odom", description="OpenVINS 输出里程计话题。"
+        ),
         DeclareLaunchArgument(
             "odom_info_topic",
             default_value="/odom_info",
@@ -83,7 +87,9 @@ def generate_launch_description():
             default_value=os.path.expanduser("~/.ros/rtabmap_openvins_mapping.db"),
             description="RTAB-Map 数据库路径。",
         ),
-        DeclareLaunchArgument("delete_db_on_start", default_value="true", description="启动时是否删除旧地图。"),
+        DeclareLaunchArgument(
+            "delete_db_on_start", default_value="true", description="启动时是否删除旧地图。"
+        ),
         DeclareLaunchArgument("launch_viz", default_value="true", description="是否启动 rtabmap_viz。"),
     ]
 
@@ -138,6 +144,7 @@ def generate_launch_description():
             ("right/image_rect", right_image_topic),
             ("left/camera_info", left_info_topic),
             ("right/camera_info", right_info_topic),
+            ("imu", imu_topic),
             ("odom", odom_topic),
             ("odom_info", odom_info_topic),
         ],
@@ -166,6 +173,7 @@ def generate_launch_description():
             ("right/image_rect", right_image_topic),
             ("left/camera_info", left_info_topic),
             ("right/camera_info", right_info_topic),
+            ("imu", imu_topic),
             ("odom", odom_topic),
             ("odom_info", odom_info_topic),
         ],

@@ -8,7 +8,7 @@ def generate_launch_description():
         executable='usb_cam_node_exe',
         name='usb_cam',
         parameters=[{
-            'video_device': '/dev/video0',
+            'video_device': '/dev/video2',
             'image_width': 1280,
             'image_height': 480,
             'framerate': 15.0,
@@ -21,8 +21,8 @@ def generate_launch_description():
 
     stereo_split_node = Node(
         package='stereo_camera_pkg',
-        executable='stereo_split_node_rgb',
-        name='stereo_split_node_rgb'
+        executable='stereo_split_node',
+        name='stereo_split_node'
     )
 
     tf_cam_link_left = Node(
