@@ -31,11 +31,11 @@ def generate_launch_description():
         'Rtabmap/DetectionRate': '1',
         'Reg/Force3DoF': 'false',
 
-        'Kp/MaxFeatures': '1000',
+        'Kp/MaxFeatures': '700',
         'Kp/NndrRatio': '0.75',
 
         'GFTT/MinDistance': '10',
-        'GFTT/QualityLevel': '0.00001',
+        'GFTT/QualityLevel': '0.001',
         'GFTT/MaxCorners': '400',
 
         'Stereo/MaxDisparity':'128',
@@ -45,7 +45,8 @@ def generate_launch_description():
         'Grid/NoiseFilteringMinNeighbors': '8',
         'Grid/NoiseFilteringRadius': '0.1',
         'Grid/NoiseFilteringMinNeighbors': '5',
-        'Stereo/DenseStrategy': '1'
+        'qos': 2,
+        'qos_camera_info': 2,
 
 	}
 
@@ -67,18 +68,20 @@ def generate_launch_description():
         'Vis/FeatureType': '8',
         'Vis/EstimationType': '1', 
         'Vis/MinInliers': '10',
-        'Vis/MaxFeatures': '1000',
+        'Vis/MaxFeatures': '700',
         'Vis/CorType': '0',
 
         'Odom/Strategy': '0', 
-        'OdomF2M/MaxSize': '1000',
+        'OdomF2M/MaxSize': '500',
 
         'GFTT/MinDistance': '10',
-        'GFTT/QualityLevel': '0.00001',
-         'Grid/RayTracing': 'true',
+        'GFTT/QualityLevel': '0.001',
+        'Grid/RayTracing': 'true',
         'Kp/NndrRatio':'0.75',
         'Stereo/MaxDisparity':'128',
-        'Stereo/DenseStrategy': '1'
+        'qos': 2,
+        'qos_camera_info': 2,
+
 	}
 
     
@@ -92,7 +95,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('base_frame', default_value='camera_link'),
-        DeclareLaunchArgument('use_viz', default_value='true'),
+        DeclareLaunchArgument('use_viz', default_value='false'),
         DeclareLaunchArgument('approx_sync', default_value='true'),
         DeclareLaunchArgument('baseline', default_value='-0.05'),
         

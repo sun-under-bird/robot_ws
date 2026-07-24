@@ -46,13 +46,10 @@ openvins_stereo_odometry:
 
     # RMW reliability 枚举；stereo_odometry 用它设置图像订阅和里程计相关发布器。
     # 0=SYSTEM_DEFAULT，1=RELIABLE，2=BEST_EFFORT。
-    qos: 2
-
-    # 当前 stereo_odometry 源码不读取该参数；双目图像订阅使用 qos。
-    qos_image: 2
+    qos: 1
 
     # CameraInfo 订阅的 RMW reliability 枚举。
-    qos_camera_info: 2
+    qos_camera_info: 1
 
     # IMU 订阅的 RMW reliability 枚举；仅在 wait_imu_to_init=true 时声明和使用。
     qos_imu: 2
@@ -103,10 +100,10 @@ openvins_stereo_odometry:
     "OdomOpenVINS/UseKLT": "true"
 
     # 每个相机尝试提取并跟踪的特征点数量。
-    "OdomOpenVINS/NumPts": "200"
+    "OdomOpenVINS/NumPts": "300"
 
     # 特征点之间要求的最小像素距离。
-    "OdomOpenVINS/MinPxDist": "15"
+    "OdomOpenVINS/MinPxDist": "10"
 
     # FAST 检测器中心像素与圆周像素之间的强度差阈值。
     "FAST/Threshold": "20"
@@ -350,8 +347,6 @@ rtabmap:
     # 将 OdomInfo 纳入输入同步并提供给 RTAB-Map。
     subscribe_odom_info: true
 
-    # 当前 CoreWrapper 源码不以该参数控制 IMU 订阅。
-    subscribe_imu: true
 
     # true 使用 ApproximateTime 同步已启用的输入话题；false 使用 ExactTime。
     approx_sync: true
@@ -364,13 +359,13 @@ rtabmap:
 
     # 各专用 qos_* 参数未单独设置时继承的 RMW reliability 枚举。
     # 0=SYSTEM_DEFAULT，1=RELIABLE，2=BEST_EFFORT。
-    qos: 2
+    qos: 1
 
     # 图像订阅的 RMW reliability 枚举。
-    qos_image: 2
+    qos_image: 1  
 
     # CameraInfo 订阅的 RMW reliability 枚举；默认继承 qos_image。
-    qos_camera_info: 2
+    qos_camera_info: 1
 
     # IMU 订阅的 RMW reliability 枚举。
     qos_imu: 2
@@ -412,7 +407,7 @@ rtabmap:
 
     # 单次地图更新允许的最长时间，单位毫秒；0 表示不限制。
     # 超过后部分 Working Memory 节点会转入 LTM。
-    "Rtabmap/TimeThr": "0"
+    "Rtabmap/TimeThr": "700"
 
     # ===== memory / database =====
 
@@ -562,7 +557,7 @@ rtabmap:
     "Vis/PnPReprojError": "3.0"
 
     # PnP 结果的细化迭代次数；使用 Vis/BundleAdjustment 时源码建议设为 0。
-    "Vis/PnPRefineIterations": "1"
+    "Vis/PnPRefineIterations": "0"
 
     # PnP 后根据 3D 对应点计算变换方差时使用的中值比率；应大于 1。
     # 比率越大，计算出的协方差越小。
@@ -634,13 +629,13 @@ rtabmap:
     "Grid/Sensor": "1"
 
     # 占据栅格分辨率，单位米/格。
-    "Grid/CellSize": "0.05"
+    "Grid/CellSize": "0.08"
 
     # 从传感器原点起的最小距离过滤阈值，单位米。
-    "Grid/RangeMin": "0.2"
+    "Grid/RangeMin": "0.1"
 
     # 从传感器原点起的最大距离过滤阈值，单位米；0 表示无限。
-    "Grid/RangeMax": "5.0"
+    "Grid/RangeMax": "3.0"
 
     # 由深度图生成点云前的深度图降采样倍数。
     "Grid/DepthDecimation": "4"
@@ -653,7 +648,7 @@ rtabmap:
 
     # 对每个占据单元执行射线追踪，填充传感器与占据单元之间的未知空间。
     # Grid/3D=true 时需要 RTAB-Map 编译 OctoMap 支持，否则三维射线追踪被忽略。
-    "Grid/RayTracing": "false"
+    "Grid/RayTracing": "true"
 
     # 使用点法向量分割地面与障碍物；false 使用快速直通滤波。
     "Grid/NormalsSegmentation": "true"
@@ -728,10 +723,10 @@ rtabmap_viz:
 
     # 各专用 qos_* 参数未单独设置时继承的 RMW reliability 枚举。
     # 0=SYSTEM_DEFAULT，1=RELIABLE，2=BEST_EFFORT。
-    qos: 2
+    qos: 1
 
     # 图像订阅的 RMW reliability 枚举。
-    qos_image: 2
+    qos_image: 1
 
     # CameraInfo 订阅的 RMW reliability 枚举；默认继承 qos_image。
-    qos_camera_info: 2
+    qos_camera_info: 1

@@ -37,7 +37,7 @@ def _launch_setup(context, *args, **kwargs):
         "hue": int(LaunchConfiguration("hue").perform(context)),
         "gamma": int(LaunchConfiguration("gamma").perform(context)),
         "frame_rate": float(LaunchConfiguration("frame_rate").perform(context)),
-
+        "gain": int(LaunchConfiguration("gain").perform(context)),
         # SLAM 建议关闭自动白平衡，避免图像亮度/颜色漂移。
         "white_balance_automatic": _as_bool(
             LaunchConfiguration("white_balance_automatic").perform(context)
@@ -71,19 +71,20 @@ def generate_launch_description():
         DeclareLaunchArgument("image_height", default_value="480"),
 
         DeclareLaunchArgument("pixel_format", default_value="YUYV"),
-        DeclareLaunchArgument("frame_rate", default_value="100.0"),
-        DeclareLaunchArgument("output_encoding", default_value="yuv422_yuy2"),
+        DeclareLaunchArgument("frame_rate", default_value="15.0"),
+        DeclareLaunchArgument("output_encoding", default_value="mono8"),
 
         DeclareLaunchArgument("camera_frame_id", default_value="stereo_camera"),
         DeclareLaunchArgument("camera_info_url", default_value=""),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
 
         DeclareLaunchArgument("brightness", default_value="0"),
-        DeclareLaunchArgument("contrast", default_value="32"),
+        DeclareLaunchArgument("contrast", default_value="0"),
         DeclareLaunchArgument("saturation", default_value="38"),
         DeclareLaunchArgument("hue", default_value="0"),
         DeclareLaunchArgument("gamma", default_value="150"),
         DeclareLaunchArgument("white_balance_automatic", default_value="false"),
+        DeclareLaunchArgument("gain", default_value="1"),
 
         OpaqueFunction(function=_launch_setup),
     ])

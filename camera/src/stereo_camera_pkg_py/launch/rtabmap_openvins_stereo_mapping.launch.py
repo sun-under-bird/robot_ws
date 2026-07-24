@@ -5,6 +5,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 THIS_DIR = os.path.dirname(__file__)
@@ -12,6 +13,7 @@ DEFAULT_CONFIG_DIR = os.path.normpath(os.path.join(THIS_DIR, "..", "config"))
 
 
 def generate_launch_description():
+    """同时启动 OpenVINS、RTAB-Map 建图节点和可视化节点。"""
     params_file = LaunchConfiguration("params_file")
     openvins_config_path = LaunchConfiguration("openvins_config_path")
     namespace = LaunchConfiguration("namespace")
@@ -26,6 +28,12 @@ def generate_launch_description():
     right_image_topic = LaunchConfiguration("right_image_topic")
     left_info_topic = LaunchConfiguration("left_info_topic")
     right_info_topic = LaunchConfiguration("right_info_topic")
+    odom_left_image_topic = LaunchConfiguration("odom_left_image_topic")
+    odom_right_image_topic = LaunchConfiguration("odom_right_image_topic")
+    odom_left_info_topic = LaunchConfiguration("odom_left_info_topic")
+    odom_right_info_topic = LaunchConfiguration("odom_right_info_topic")
+    odom_images_already_rectified = LaunchConfiguration(
+        "odom_images_already_rectified")
     imu_topic = LaunchConfiguration("imu_topic")
     odom_topic = LaunchConfiguration("odom_topic")
     odom_info_topic = LaunchConfiguration("odom_info_topic")
@@ -72,6 +80,40 @@ def generate_launch_description():
             description="右目 CameraInfo 话题。",
         ),
         DeclareLaunchArgument(
+            "odom_left_image_topic",
+            default_value=left_image_topic,
+            description=(
+                "OpenVINS 左目图像话题；默认与建图话题一致，"
+                "使用原始相机外参时可单独传入未矫正图像。"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "odom_right_image_topic",
+            default_value=right_image_topic,
+            description=(
+                "OpenVINS 右目图像话题；默认与建图话题一致，"
+                "使用原始相机外参时可单独传入未矫正图像。"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "odom_left_info_topic",
+            default_value=left_info_topic,
+            description="OpenVINS 左目 CameraInfo；应与其图像和外参属于同一原始坐标系。",
+        ),
+        DeclareLaunchArgument(
+            "odom_right_info_topic",
+            default_value=right_info_topic,
+            description="OpenVINS 右目 CameraInfo；应与其图像和外参属于同一原始坐标系。",
+        ),
+        DeclareLaunchArgument(
+            "odom_images_already_rectified",
+            default_value="true",
+            description=(
+                "OpenVINS 输入是否已矫正；false 时使用 CameraInfo 原始 K/D "
+                "和原始相机 TF。"
+            ),
+        ),
+        DeclareLaunchArgument(
             "imu_topic", default_value="/camera/camera/imu", description="IMU 话题。"
         ),
         DeclareLaunchArgument(
@@ -107,13 +149,18 @@ def generate_launch_description():
                 "frame_id": frame_id,
                 "odom_frame_id": odom_frame_id,
                 "OdomOpenVINS/ConfigPath": openvins_config_path,
+                # RTAB-Map core 参数在 ROS 2 中按字符串传递。
+                "Rtabmap/ImagesAlreadyRectified": ParameterValue(
+                    odom_images_already_rectified, value_type=str),
             },
         ],
         remappings=[
-            ("left/image_rect", left_image_topic),
-            ("right/image_rect", right_image_topic),
-            ("left/camera_info", left_info_topic),
-            ("right/camera_info", right_info_topic),
+            # OpenVINS 可以直接处理原始 radtan/equidistant 图像。
+            # 独立话题避免把矫正图像射线和原始相机外参混用。
+            ("left/image_rect", odom_left_image_topic),
+            ("right/image_rect", odom_right_image_topic),
+            ("left/camera_info", odom_left_info_topic),
+            ("right/camera_info", odom_right_info_topic),
             ("imu", imu_topic),
             ("odom", odom_topic),
             ("odom_info", odom_info_topic),
