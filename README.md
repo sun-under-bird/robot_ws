@@ -1,20 +1,22 @@
 # robot_ws
 
-用于把相机、IMU、OpenVINS 和 VINS-Fusion 代码迁移到 RK3588 的总仓库。
-四个子工程保留原目录结构，避免改变已经验证过的配置相对路径。
+用于把传感器驱动、OpenVINS、VINS-Fusion、建图和导航代码迁移到 RK3588 的总仓库。
+ROS 2 包按职责拆分：传感器统一放在 `sensor_ws`，建图导航统一放在 `slam_ws`。
 
 ## 目录
 
 ```text
 robot_ws/
-├── camera/
-├── imu_ws/
+├── sensor_ws/                  # 相机、IMU 驱动和传感器数据预处理
+├── slam_ws/                    # 建图、定位、状态估计和 Nav2 入口
 ├── openvins_ws/
 ├── VINS-Fusion-ROS2-humble-arm/
-└── scripts/
-    ├── setup_robot_env.sh
-    └── build_all.sh
+├── tools/                      # 离线分析和硬件测试工具
+└── scripts/                    # 环境、构建和加载脚本
 ```
+
+本机工作总结统一归档在仓库外的 `/home/bird/work_log`，不再分散保存在各工程
+目录中。
 
 以下内容未复制，也不应提交到 Git：
 
@@ -25,12 +27,12 @@ robot_ws/
 
 ## 来源快照
 
-- `camera`: `5e36757e0803813a8c9703d647413bdaadff5513`
+- 原 `camera` 工程：`5e36757e0803813a8c9703d647413bdaadff5513`
 - `open_vins`: `69488123ed9362dd44b6f28e7f4680abbff1442b`
 - `VINS-Fusion-ROS2-humble-arm`: `ee54c07d3e33ea5ac02816f373fbd322e11b8fa4`
-- `imu_ws`: 原目录不是 Git 仓库，按当前文件复制。
+- 原 `imu_ws` 工程：原目录不是 Git 仓库，按当前文件复制。
 
-复制的是当前工作树，因此也包含 `camera` 和 VINS-Fusion 中尚未提交的源码、配置及文档修改。
+复制的是当时的工作树，因此也包含原 `camera` 和 VINS-Fusion 中尚未提交的源码、配置及文档修改。
 
 ## RK3588 环境
 
@@ -50,6 +52,7 @@ rosdep install --from-paths . --ignore-src -r -y --rosdistro "${ROS_DISTRO}"
 - `ROBOT_WS_ROOT`：当前仓库根目录；
 - `ROBOT_OUTPUT_DIR`：默认 `${ROBOT_WS_ROOT}/output`；
 - `ROS_DISTRO`：默认 `humble`。
+- `ROBOT_RTABMAP_WS`：若仓库同级存在 `rtabmap_humble_ws`，自动指向该目录。
 
 需要把运行结果写到外接 SSD 时，在 source 前覆盖输出目录：
 
@@ -66,12 +69,39 @@ source scripts/setup_robot_env.sh
 ./scripts/build_all.sh
 ```
 
+构建顺序固定为 `sensor_ws → openvins_ws → VINS-Fusion → slam_ws`。构建完成后，
+可以一次加载全部环境：
+
+```bash
+source ~/robot_ws/scripts/source_all.sh
+```
+
+RTAB-Map 和 Nav2 是 `slam_ws` 的第三方依赖，不复制进本仓库。Nav2 默认使用系统
+ROS 2 安装；若使用自编译 RTAB-Map，可在加载环境前显式指定：
+
+```bash
+export ROBOT_RTABMAP_WS=/path/to/rtabmap_humble_ws
+source ~/robot_ws/scripts/source_all.sh
+```
+
 也可以单独构建，例如：
 
 ```bash
 source ~/robot_ws/scripts/setup_robot_env.sh
 cd "${ROBOT_WS_ROOT}/openvins_ws"
 source /opt/ros/humble/setup.bash
+colcon build --symlink-install --executor sequential
+```
+
+只构建传感器或建图导航工作空间时，按以下顺序加载依赖：
+
+```bash
+source /opt/ros/humble/setup.bash
+cd "${ROBOT_WS_ROOT}/sensor_ws"
+colcon build --symlink-install --executor sequential
+source install/setup.bash
+
+cd "${ROBOT_WS_ROOT}/slam_ws"
 colcon build --symlink-install --executor sequential
 ```
 

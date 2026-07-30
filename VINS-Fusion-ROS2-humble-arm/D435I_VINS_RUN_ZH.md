@@ -226,7 +226,7 @@ base frame:    body
 odom frame:    world
 ```
 
-`${ROBOT_WS_ROOT}/camera/src/stereo_camera_pkg_py/launch/d435i.launch.py`
+`${ROBOT_WS_ROOT}/slam_ws/src/stereo_slam_legacy_bringup/launch/d435i_openvins_rtabmap.launch.py`
 中 RTAB-Map 的关键参数建议改为：
 
 ```python
