@@ -520,15 +520,21 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // Pass them to our MSCKF updater
   // NOTE: if we have more then the max, we select the "best" ones (i.e. max tracks) for this update
   // NOTE: this should only really be used if you want to track a lot of features, or have limited computational resources
+  const size_t msckf_candidates = featsup_MSCKF.size();
   if ((int)featsup_MSCKF.size() > state->_options.max_msckf_in_update)
     featsup_MSCKF.erase(featsup_MSCKF.begin(), featsup_MSCKF.end() - state->_options.max_msckf_in_update);
+  const size_t msckf_selected = featsup_MSCKF.size();
   updaterMSCKF->update(state, featsup_MSCKF);
+  // Updater 会原地移除清理、三角化或卡方检验失败的特征，剩余数量即实际参与更新的数量。
+  const size_t msckf_accepted = featsup_MSCKF.size();
   propagator->invalidate_cache();
   rT4 = boost::posix_time::microsec_clock::local_time();
 
   // Perform SLAM delay init and update
   // NOTE: that we provide the option here to do a *sequential* update
   // NOTE: this will be a lot faster but won't be as accurate.
+  const size_t slam_update_candidates = feats_slam_UPDATE.size();
+  const size_t slam_init_candidates = feats_slam_DELAYED.size();
   std::vector<std::shared_ptr<Feature>> feats_slam_UPDATE_TEMP;
   while (!feats_slam_UPDATE.empty()) {
     // Get sub vector of the features we will update with
@@ -543,8 +549,10 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     propagator->invalidate_cache();
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
+  const size_t slam_update_accepted = feats_slam_UPDATE.size();
   rT5 = boost::posix_time::microsec_clock::local_time();
   updaterSLAM->delayed_init(state, feats_slam_DELAYED);
+  const size_t slam_init_accepted = feats_slam_DELAYED.size();
   rT6 = boost::posix_time::microsec_clock::local_time();
 
   //===================================================================================
@@ -627,6 +635,18 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   ss << ")" << std::endl;
   PRINT_DEBUG(BLUE "%s" RESET, ss.str().c_str());
 
+  // 汇总视觉观测漏斗；一行对应一个相机时间戳，便于和 IMU 冲击及轨迹漂移对齐。
+  size_t active_observations = 0;
+  const auto active_tracks = trackFEATS->get_last_obs();
+  for (const auto &camera_tracks : active_tracks) {
+    active_observations += camera_tracks.second.size();
+  }
+  PRINT_INFO(
+      "[OV-VIO] t=%.6f active_obs=%zu msckf_candidates=%zu msckf_selected=%zu msckf_accepted=%zu "
+      "slam_update=%zu/%zu slam_init=%zu/%zu slam_state=%zu clones=%zu\n",
+      message.timestamp, active_observations, msckf_candidates, msckf_selected, msckf_accepted, slam_update_accepted,
+      slam_update_candidates, slam_init_accepted, slam_init_candidates, state->_features_SLAM.size(), state->_clones_IMU.size());
+
   // Finally if we are saving stats to file, lets save it to file
   if (params.record_timing_information && of_statistics.is_open()) {
     // We want to publish in the IMU clock frame
@@ -650,17 +670,14 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   timelastupdate = message.timestamp;
 
-  // Debug, print our current state
-  PRINT_INFO("q_GtoI = %.3f,%.3f,%.3f,%.3f | p_IinG = %.3f,%.3f,%.3f | dist = %.2f (meters)\n", state->_imu->quat()(0),
-             state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3), state->_imu->pos()(0), state->_imu->pos()(1),
-             state->_imu->pos()(2), distance);
-  PRINT_INFO("bg = %.4f,%.4f,%.4f | ba = %.4f,%.4f,%.4f\n", state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2),
-             state->_imu->bias_a()(0), state->_imu->bias_a()(1), state->_imu->bias_a()(2));
-
-  // Debug for camera imu offset
-  if (state->_options.do_calib_camera_timeoffset) {
-    PRINT_INFO("camera-imu timeoffset = %.5f\n", state->_calib_dt_CAMtoIMU->value()(0));
-  }
+  // 单行记录核心状态，避免原有多行输出难以按时间戳关联。
+  PRINT_INFO(
+      "[OV-STATE] t=%.6f q=%.5f,%.5f,%.5f,%.5f p=%.5f,%.5f,%.5f v=%.5f,%.5f,%.5f "
+      "bg=%.6f,%.6f,%.6f ba=%.6f,%.6f,%.6f camimu_dt=%.6f dist=%.3f\n",
+      message.timestamp, state->_imu->quat()(0), state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3),
+      state->_imu->pos()(0), state->_imu->pos()(1), state->_imu->pos()(2), state->_imu->vel()(0), state->_imu->vel()(1),
+      state->_imu->vel()(2), state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2), state->_imu->bias_a()(0),
+      state->_imu->bias_a()(1), state->_imu->bias_a()(2), state->_calib_dt_CAMtoIMU->value()(0), distance);
 
   // Debug for camera intrinsics
   if (state->_options.do_calib_camera_intrinsics) {

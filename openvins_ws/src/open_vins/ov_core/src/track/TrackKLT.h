@@ -64,6 +64,17 @@ public:
 
 protected:
   /**
+   * @brief 单次 KLT 与 RANSAC 匹配的诊断统计。
+   *
+   * 该结构只用于输出日志，不参与特征筛选和滤波计算。
+   */
+  struct MatchingStatistics {
+    size_t input = 0;
+    size_t klt_passed = 0;
+    size_t ransac_passed = 0;
+  };
+
+  /**
    * @brief Process a new monocular image
    * @param message Contains our timestamp, images, and camera ids
    * @param msg_id the camera index in message data vector
@@ -128,8 +139,9 @@ protected:
    * The two point vectors will be of equal size, but the mask_out variable will specify which points are good or bad.
    * If the second vector is non-empty, it will be used as an initial guess of where the keypoints are in the second image.
    */
-  void perform_matching(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr, std::vector<cv::KeyPoint> &pts0,
-                        std::vector<cv::KeyPoint> &pts1, size_t id0, size_t id1, std::vector<uchar> &mask_out);
+  MatchingStatistics perform_matching(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr,
+                                      std::vector<cv::KeyPoint> &pts0, std::vector<cv::KeyPoint> &pts1, size_t id0, size_t id1,
+                                      std::vector<uchar> &mask_out);
 
   // Parameters for our FAST grid detector
   int threshold;

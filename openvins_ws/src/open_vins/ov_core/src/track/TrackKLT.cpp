@@ -119,6 +119,7 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     img_mask_last[cam_id] = mask;
     pts_last[cam_id] = good_left;
     ids_last[cam_id] = good_ids_left;
+    PRINT_INFO("[OV-KLT] t=%.6f mode=mono init=1 cam=%zu detected=%zu\n", message.timestamp, cam_id, good_left.size());
     return;
   }
 
@@ -135,7 +136,8 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
   std::vector<cv::KeyPoint> pts_left_new = pts_left_old;
 
   // Lets track temporally
-  perform_matching(img_pyramid_last[cam_id], imgpyr, pts_left_old, pts_left_new, cam_id, cam_id, mask_ll);
+  MatchingStatistics match_ll =
+      perform_matching(img_pyramid_last[cam_id], imgpyr, pts_left_old, pts_left_new, cam_id, cam_id, mask_ll);
   assert(pts_left_new.size() == ids_left_old.size());
   rT4 = boost::posix_time::microsec_clock::local_time();
 
@@ -147,6 +149,8 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     img_mask_last[cam_id] = mask;
     pts_last[cam_id].clear();
     ids_last[cam_id].clear();
+    PRINT_INFO("[OV-KLT] t=%.6f mode=mono cam=%zu input=%zu klt=%zu ransac=%zu output=0 reset=1\n", message.timestamp, cam_id,
+               match_ll.input, match_ll.klt_passed, match_ll.ransac_passed);
     PRINT_ERROR(RED "[KLT-EXTRACTOR]: Failed to get enough points to do RANSAC, resetting.....\n" RESET);
     return;
   }
@@ -188,6 +192,10 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
     ids_last[cam_id] = good_ids_left;
   }
   rT5 = boost::posix_time::microsec_clock::local_time();
+
+  // 单行记录本帧从光流到最终边界/掩膜筛选的完整漏斗，便于与冲击时刻对齐。
+  PRINT_INFO("[OV-KLT] t=%.6f mode=mono cam=%zu input=%zu klt=%zu ransac=%zu output=%zu reset=0\n", message.timestamp, cam_id,
+             match_ll.input, match_ll.klt_passed, match_ll.ransac_passed, good_left.size());
 
   // Timing information
   PRINT_ALL("[TIME-KLT]: %.4f seconds for pyramid\n", (rT2 - rT1).total_microseconds() * 1e-6);
@@ -236,6 +244,8 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     pts_last[cam_id_right] = good_right;
     ids_last[cam_id_left] = good_ids_left;
     ids_last[cam_id_right] = good_ids_right;
+    PRINT_INFO("[OV-KLT] t=%.6f mode=stereo init=1 detected_l=%zu detected_r=%zu\n", message.timestamp, good_left.size(),
+               good_right.size());
     return;
   }
 
@@ -255,15 +265,23 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
   std::vector<uchar> mask_ll, mask_rr;
   std::vector<cv::KeyPoint> pts_left_new = pts_left_old;
   std::vector<cv::KeyPoint> pts_right_new = pts_right_old;
+  MatchingStatistics match_ll, match_rr;
 
   // Lets track temporally
   parallel_for_(cv::Range(0, 2), LambdaBody([&](const cv::Range &range) {
                   for (int i = range.start; i < range.end; i++) {
                     bool is_left = (i == 0);
-                    perform_matching(img_pyramid_last[is_left ? cam_id_left : cam_id_right], is_left ? imgpyr_left : imgpyr_right,
-                                     is_left ? pts_left_old : pts_right_old, is_left ? pts_left_new : pts_right_new,
-                                     is_left ? cam_id_left : cam_id_right, is_left ? cam_id_left : cam_id_right,
-                                     is_left ? mask_ll : mask_rr);
+                    MatchingStatistics stats =
+                        perform_matching(img_pyramid_last[is_left ? cam_id_left : cam_id_right],
+                                         is_left ? imgpyr_left : imgpyr_right, is_left ? pts_left_old : pts_right_old,
+                                         is_left ? pts_left_new : pts_right_new, is_left ? cam_id_left : cam_id_right,
+                                         is_left ? cam_id_left : cam_id_right, is_left ? mask_ll : mask_rr);
+                    // 左右目由不同并行分支独占写入，不改变原有并行跟踪行为。
+                    if (is_left) {
+                      match_ll = stats;
+                    } else {
+                      match_rr = stats;
+                    }
                   }
                 }));
   rT4 = boost::posix_time::microsec_clock::local_time();
@@ -294,6 +312,11 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     pts_last[cam_id_right].clear();
     ids_last[cam_id_left].clear();
     ids_last[cam_id_right].clear();
+    PRINT_INFO(
+        "[OV-KLT] t=%.6f mode=stereo input_l=%zu klt_l=%zu ransac_l=%zu input_r=%zu klt_r=%zu ransac_r=%zu "
+        "output_l=0 output_r=0 stereo_pairs=0 reset=1\n",
+        message.timestamp, match_ll.input, match_ll.klt_passed, match_ll.ransac_passed, match_rr.input, match_rr.klt_passed,
+        match_rr.ransac_passed);
     PRINT_ERROR(RED "[KLT-EXTRACTOR]: Failed to get enough points to do RANSAC, resetting.....\n" RESET);
     return;
   }
@@ -301,6 +324,7 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
   // Get our "good tracks"
   std::vector<cv::KeyPoint> good_left, good_right;
   std::vector<size_t> good_ids_left, good_ids_right;
+  size_t stereo_pairs = 0;
 
   // Loop through all left points
   for (size_t i = 0; i < pts_left_new.size(); i++) {
@@ -329,6 +353,7 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
       good_right.push_back(pts_right_new.at(index_right));
       good_ids_left.push_back(ids_left_old.at(i));
       good_ids_right.push_back(ids_right_old.at(index_right));
+      ++stereo_pairs;
       // PRINT_DEBUG("adding to stereo - %u , %u\n", ids_left_old.at(i), ids_right_old.at(index_right));
     } else if (mask_ll[i]) {
       good_left.push_back(pts_left_new.at(i));
@@ -380,6 +405,13 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     ids_last[cam_id_right] = good_ids_right;
   }
   rT6 = boost::posix_time::microsec_clock::local_time();
+
+  // 左右目分别统计时间光流，通过共享特征 ID 统计本帧仍保持的双目对。
+  PRINT_INFO(
+      "[OV-KLT] t=%.6f mode=stereo input_l=%zu klt_l=%zu ransac_l=%zu input_r=%zu klt_r=%zu ransac_r=%zu "
+      "output_l=%zu output_r=%zu stereo_pairs=%zu reset=0\n",
+      message.timestamp, match_ll.input, match_ll.klt_passed, match_ll.ransac_passed, match_rr.input, match_rr.klt_passed,
+      match_rr.ransac_passed, good_left.size(), good_right.size(), stereo_pairs);
 
   //  // Timing information
   PRINT_ALL("[TIME-KLT]: %.4f seconds for pyramid\n", (rT2 - rT1).total_microseconds() * 1e-6);
@@ -826,15 +858,19 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
   }
 }
 
-void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr, std::vector<cv::KeyPoint> &kpts0,
-                                std::vector<cv::KeyPoint> &kpts1, size_t id0, size_t id1, std::vector<uchar> &mask_out) {
+TrackKLT::MatchingStatistics TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr,
+                                                        std::vector<cv::KeyPoint> &kpts0, std::vector<cv::KeyPoint> &kpts1, size_t id0,
+                                                        size_t id1, std::vector<uchar> &mask_out) {
+
+  MatchingStatistics statistics;
+  statistics.input = kpts0.size();
 
   // We must have equal vectors
   assert(kpts0.size() == kpts1.size());
 
   // Return if we don't have any points
   if (kpts0.empty() || kpts1.empty())
-    return;
+    return statistics;
 
   // Convert keypoints into points (stupid opencv stuff)
   std::vector<cv::Point2f> pts0, pts1;
@@ -848,7 +884,7 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::
   if (pts0.size() < 10) {
     for (size_t i = 0; i < pts0.size(); i++)
       mask_out.push_back((uchar)0);
-    return;
+    return statistics;
   }
 
   // Now do KLT tracking to get the valid new points
@@ -856,6 +892,7 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::
   std::vector<float> error;
   cv::TermCriteria term_crit = cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01);
   cv::calcOpticalFlowPyrLK(img0pyr, img1pyr, pts0, pts1, mask_klt, error, win_size, pyr_levels, term_crit, cv::OPTFLOW_USE_INITIAL_FLOW);
+  statistics.klt_passed = std::count(mask_klt.begin(), mask_klt.end(), (uchar)1);
 
   // Normalize these points, so we can then do ransac
   // We don't want to do ransac on distorted image uvs since the mapping is nonlinear
@@ -877,10 +914,12 @@ void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::
     auto mask = (uchar)((i < mask_klt.size() && mask_klt[i] && i < mask_rsc.size() && mask_rsc[i]) ? 1 : 0);
     mask_out.push_back(mask);
   }
+  statistics.ransac_passed = std::count(mask_out.begin(), mask_out.end(), (uchar)1);
 
   // Copy back the updated positions
   for (size_t i = 0; i < pts0.size(); i++) {
     kpts0.at(i).pt = pts0.at(i);
     kpts1.at(i).pt = pts1.at(i);
   }
+  return statistics;
 }
