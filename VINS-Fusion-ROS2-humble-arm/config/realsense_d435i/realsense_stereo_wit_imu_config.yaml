@@ -1,0 +1,84 @@
+%YAML:1.0
+
+# D435i 矫正红外双目 + 外置 WIT IMU（2026-08-03 联合标定）。
+# 外参来源：/home/bird/kalibr_data/cam_imu_repeat_01-camchain-imucam.yaml。
+# 输入图像为 RealSense 已矫正图像，因此继续使用零畸变的 left.yaml/right.yaml。
+
+# common parameters
+# support: 1 imu 1 cam; 1 imu 2 cam; 2 cam
+imu: 1
+num_of_cam: 2
+
+imu_topic: "/imu/data_raw"
+image0_topic: "/camera/camera/infra1/image_rect_raw"
+image1_topic: "/camera/camera/infra2/image_rect_raw"
+output_path: "${ROBOT_OUTPUT_DIR}"
+
+cam0_calib: "left.yaml"
+cam1_calib: "right.yaml"
+image_width: 640
+image_height: 480
+
+# GPU acceleration
+use_gpu: 0
+use_gpu_acc_flow: 0
+use_gpu_ceres: 0
+
+# IMU 与相机外参。
+# VINS 的 body 是 WIT imu_link；body_T_cam 表示相机坐标到 IMU 坐标的变换。
+# Kalibr 给出 T_cam_imu（IMU 到相机）；下面分别写入其刚体逆 T_imu_cam。
+estimate_extrinsic: 0
+
+body_T_cam0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [ 0.03827857764789671, 0.9992553524459346, -0.004846761950603991, 0.0039123383007284565,
+       0.9992436301269717, -0.038243980590821854, 0.007040284031290858, -0.020411618176131557,
+       0.006849682031039795, -0.005112588064837827, -0.9999634709824923, -0.03470357781542836,
+       0., 0., 0., 1. ]
+
+body_T_cam1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [ 0.038278577647896654, 0.9992553524459342, -0.004846761950603989, 0.005827781191385462,
+       0.9992436301269714, -0.0382439805908218, 0.007040284031290854, 0.02959008577866984,
+       0.006849682031039793, -0.005112588064837826, -0.9999634709824918, -0.03436082279275479,
+       0., 0., 0., 1. ]
+
+# Multiple thread support
+multiple_thread: 1
+
+# Feature tracker parameters
+max_cnt: 150
+min_dist: 30
+freq: 10
+F_threshold: 1.0
+show_track: 0
+flow_back: 1
+
+# Optimization parameters
+max_solver_time: 0.04
+max_num_iterations: 8
+keyframe_parallax: 10.0
+
+# WIT IMU 噪声参数。
+# 当前沿用 openvins_rtabmap.yaml 中这颗 WIT IMU 的参数；后续有 Allan
+# 方差实测结果时，应同时更新这里的白噪声密度和偏置随机游走。
+acc_n: 0.008
+gyr_n: 0.0001
+acc_w: 0.004
+gyr_w: 0.0001
+g_norm: 9.81
+
+# Camera/IMU unsynchronization parameters
+# 标定结果：t_imu = t_cam + 0.011865022232791822 s（cam0）。
+# 当前保留在线估计策略，由 td=0 开始继续估计时间偏移。
+estimate_td: 0
+td: 0.0118656
+
+# Loop closure parameters
+load_previous_pose_graph: 0
+pose_graph_save_path: "${ROBOT_OUTPUT_DIR}/pose_graph/"
+save_image: 0
