@@ -64,6 +64,7 @@ list(APPEND LIBRARY_SOURCES
         src/update/UpdaterHelper.cpp
         src/update/UpdaterMSCKF.cpp
         src/update/UpdaterSLAM.cpp
+        src/update/UpdaterLegVelocity.cpp
         src/update/UpdaterZeroVelocity.cpp
 )
 list(APPEND LIBRARY_SOURCES src/ros/ROS2Visualizer.cpp src/ros/ROSVisualizerHelper.cpp)
@@ -107,6 +108,17 @@ add_executable(test_sim_repeat src/test_sim_repeat.cpp)
 ament_target_dependencies(test_sim_repeat ${ament_libraries})
 target_link_libraries(test_sim_repeat ov_msckf_lib ${thirdparty_libraries})
 install(TARGETS test_sim_repeat DESTINATION lib/${PROJECT_NAME})
+
+add_executable(test_leg_velocity src/test_leg_velocity.cpp)
+ament_target_dependencies(test_leg_velocity ${ament_libraries})
+target_link_libraries(test_leg_velocity ov_msckf_lib ${thirdparty_libraries})
+install(TARGETS test_leg_velocity DESTINATION lib/${PROJECT_NAME})
+if(BUILD_TESTING)
+    add_test(NAME test_leg_velocity COMMAND test_leg_velocity)
+    # 测试优先加载当前构建目录的库，避免同名旧工作区覆盖新增符号。
+    set_tests_properties(test_leg_velocity PROPERTIES
+        ENVIRONMENT "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:ov_msckf_lib>:$ENV{LD_LIBRARY_PATH}")
+endif()
 
 # Install launch and config directories
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch/)

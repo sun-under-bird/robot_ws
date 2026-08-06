@@ -30,6 +30,28 @@ using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
+bool Propagator::get_interpolated_imu(double timestamp, ov_core::ImuData &measurement) {
+  std::lock_guard<std::mutex> lck(imu_data_mtx);
+  if (imu_data.empty()) {
+    return false;
+  }
+  auto upper = std::lower_bound(imu_data.begin(), imu_data.end(), timestamp,
+                                [](const ov_core::ImuData &data, double value) { return data.timestamp < value; });
+  if (upper != imu_data.end() && std::abs(upper->timestamp - timestamp) < 1e-9) {
+    measurement = *upper;
+    return true;
+  }
+  if (upper == imu_data.begin() || upper == imu_data.end()) {
+    return false;
+  }
+  const auto lower = std::prev(upper);
+  if (upper->timestamp <= lower->timestamp) {
+    return false;
+  }
+  measurement = interpolate_data(*lower, *upper, timestamp);
+  return true;
+}
+
 void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timestamp) {
 
   // If the difference between the current update time and state is zero

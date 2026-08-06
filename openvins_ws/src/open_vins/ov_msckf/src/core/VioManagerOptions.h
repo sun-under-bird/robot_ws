@@ -94,6 +94,57 @@ struct VioManagerOptions {
   /// If we should only use the zupt at the very beginning static initialization phase
   bool zupt_only_at_beginning = false;
 
+  /// 视觉失效时是否启用足式速度辅助，默认关闭以保持原始 OpenVINS 行为
+  bool leg_velocity_enabled = false;
+
+  /// 是否融合足式里程计的竖直速度
+  bool leg_velocity_use_vertical = true;
+
+  /// 是否融合独立足式里程计的偏航角速度
+  bool leg_velocity_use_yaw_rate = true;
+
+  /// 足式消息时间偏移，正值表示观测实际发生得更晚
+  double leg_velocity_time_offset = 0.0;
+
+  /// 足式速度观测允许的最大消息年龄
+  double leg_velocity_max_age = 0.15;
+
+  /// 判定视觉失效所需的连续无更新帧数
+  int leg_velocity_loss_frames = 3;
+
+  /// 判定视觉失效的最大无更新时长
+  double leg_velocity_loss_time = 0.2;
+
+  /// 视觉恢复后继续联合约束的稳定时长
+  double leg_velocity_recovery_time = 0.5;
+
+  /// 视觉恢复所需的最少活动观测数
+  int leg_velocity_min_active_observations = 60;
+
+  /// 视觉恢复窗口内所需的最少通过约束数
+  int leg_velocity_recovery_accepted = 10;
+
+  /// 水平速度观测方差下限
+  double leg_velocity_horizontal_variance_floor = 0.05;
+
+  /// 竖直速度观测方差下限
+  double leg_velocity_vertical_variance_floor = 0.10;
+
+  /// 偏航角速度观测方差下限
+  double leg_velocity_yaw_rate_variance_floor = 0.02;
+
+  /// 足式速度创新卡方阈值倍率
+  double leg_velocity_chi2_multiplier = 1.0;
+
+  /// 三维线速度的绝对上限
+  double leg_velocity_max_linear_speed = 5.0;
+
+  /// 竖直速度的绝对上限
+  double leg_velocity_max_vertical_speed = 2.0;
+
+  /// 偏航角速度的绝对上限
+  double leg_velocity_max_yaw_rate = 6.0;
+
   /// If we should record the timing performance to file
   bool record_timing_information = false;
 
@@ -117,6 +168,23 @@ struct VioManagerOptions {
       parser->parse_config("zupt_noise_multiplier", zupt_noise_multiplier);
       parser->parse_config("zupt_max_disparity", zupt_max_disparity);
       parser->parse_config("zupt_only_at_beginning", zupt_only_at_beginning);
+      parser->parse_config("leg_velocity_enabled", leg_velocity_enabled);
+      parser->parse_config("leg_velocity_use_vertical", leg_velocity_use_vertical);
+      parser->parse_config("leg_velocity_use_yaw_rate", leg_velocity_use_yaw_rate);
+      parser->parse_config("leg_velocity_time_offset", leg_velocity_time_offset);
+      parser->parse_config("leg_velocity_max_age", leg_velocity_max_age);
+      parser->parse_config("leg_velocity_loss_frames", leg_velocity_loss_frames);
+      parser->parse_config("leg_velocity_loss_time", leg_velocity_loss_time);
+      parser->parse_config("leg_velocity_recovery_time", leg_velocity_recovery_time);
+      parser->parse_config("leg_velocity_min_active_observations", leg_velocity_min_active_observations);
+      parser->parse_config("leg_velocity_recovery_accepted", leg_velocity_recovery_accepted);
+      parser->parse_config("leg_velocity_horizontal_variance_floor", leg_velocity_horizontal_variance_floor);
+      parser->parse_config("leg_velocity_vertical_variance_floor", leg_velocity_vertical_variance_floor);
+      parser->parse_config("leg_velocity_yaw_rate_variance_floor", leg_velocity_yaw_rate_variance_floor);
+      parser->parse_config("leg_velocity_chi2_multiplier", leg_velocity_chi2_multiplier);
+      parser->parse_config("leg_velocity_max_linear_speed", leg_velocity_max_linear_speed);
+      parser->parse_config("leg_velocity_max_vertical_speed", leg_velocity_max_vertical_speed);
+      parser->parse_config("leg_velocity_max_yaw_rate", leg_velocity_max_yaw_rate);
       parser->parse_config("record_timing_information", record_timing_information);
       parser->parse_config("record_timing_filepath", record_timing_filepath);
     }
@@ -126,6 +194,12 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - zupt_noise_multiplier: %.2f\n", zupt_noise_multiplier);
     PRINT_DEBUG("  - zupt_max_disparity: %.4f\n", zupt_max_disparity);
     PRINT_DEBUG("  - zupt_only_at_beginning?: %d\n", zupt_only_at_beginning);
+    PRINT_DEBUG("  - leg velocity enabled?: %d\n", leg_velocity_enabled);
+    PRINT_DEBUG("  - leg velocity use vertical?: %d\n", leg_velocity_use_vertical);
+    PRINT_DEBUG("  - leg velocity use yaw rate?: %d\n", leg_velocity_use_yaw_rate);
+    PRINT_DEBUG("  - leg velocity max age: %.3f\n", leg_velocity_max_age);
+    PRINT_DEBUG("  - leg velocity loss: %d frames / %.3f sec\n", leg_velocity_loss_frames, leg_velocity_loss_time);
+    PRINT_DEBUG("  - leg velocity recovery time: %.3f sec\n", leg_velocity_recovery_time);
     PRINT_DEBUG("  - record timing?: %d\n", (int)record_timing_information);
     PRINT_DEBUG("  - record timing filepath: %s\n", record_timing_filepath.c_str());
   }

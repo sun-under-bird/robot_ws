@@ -26,12 +26,15 @@
 #include <algorithm>
 #include <atomic>
 #include <boost/filesystem.hpp>
+#include <deque>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 
 #include "VioManagerOptions.h"
+#include "utils/sensor_data.h"
 
 namespace ov_core {
 struct ImuData;
@@ -50,7 +53,50 @@ class StateHelper;
 class UpdaterMSCKF;
 class UpdaterSLAM;
 class UpdaterZeroVelocity;
+class UpdaterLegVelocity;
 class Propagator;
+
+/// 足式速度辅助状态，DISABLED 保证默认配置完全沿用原始 VIO 行为。
+enum class LegVelocityMode { DISABLED, WAITING, VISUAL_ONLY, LEG_ASSIST, IMU_ONLY, RECOVERING };
+
+/// 单帧视觉约束统计，用实际进入 EKF 的特征数量判断视觉是否仍在约束状态。
+struct VisualUpdateStats {
+  double timestamp = -1.0;
+  size_t active_observations = 0;
+  size_t msckf_candidates = 0;
+  size_t msckf_selected = 0;
+  size_t msckf_accepted = 0;
+  size_t slam_update_candidates = 0;
+  size_t slam_init_candidates = 0;
+  size_t slam_update_accepted = 0;
+  size_t slam_init_accepted = 0;
+
+  /// 返回本帧真正进入 EKF 的视觉约束总数。
+  size_t accepted_total() const { return msckf_accepted + slam_update_accepted + slam_init_accepted; }
+};
+
+/// 足式辅助运行状态，供 RTAB-Map 诊断接口读取。
+struct LegVelocityStatus {
+  LegVelocityMode mode = LegVelocityMode::DISABLED;
+  double timestamp = -1.0;
+  double measurement_age = -1.0;
+  double chi2 = -1.0;
+  double chi2_threshold = -1.0;
+  bool update_accepted = false;
+  Eigen::Matrix<double, 4, 1> innovation = Eigen::Matrix<double, 4, 1>::Constant(
+      std::numeric_limits<double>::quiet_NaN());
+  size_t active_observations = 0;
+  size_t visual_accepted = 0;
+  size_t msckf_candidates = 0;
+  size_t msckf_selected = 0;
+  size_t msckf_accepted = 0;
+  size_t slam_update_candidates = 0;
+  size_t slam_update_accepted = 0;
+  size_t slam_init_candidates = 0;
+  size_t slam_init_accepted = 0;
+  Eigen::Vector3d lever_arm = Eigen::Vector3d::Zero();
+  std::string reason = "disabled";
+};
 
 /**
  * @brief Core class that manages the entire system
@@ -73,6 +119,15 @@ public:
    * @param message Contains our timestamp and inertial information
    */
   void feed_measurement_imu(const ov_core::ImuData &message);
+
+  /// 缓存一条 base_link 足式速度观测，实际 EKF 更新只在相机线程执行。
+  void feed_measurement_leg_velocity(const ov_core::LegVelocityData &message);
+
+  /// 设置从 IMU 到 base_link 的固定旋转和杆臂。
+  void set_leg_velocity_extrinsics(const Eigen::Matrix3d &R_BI, const Eigen::Vector3d &r_IB_in_I);
+
+  /// TF 缺失或运行中改变时使足式外参永久失效，直到重新创建 VioManager。
+  void disable_leg_velocity_extrinsics(const std::string &reason);
 
   /**
    * @brief Feed function for camera measurements
@@ -109,6 +164,12 @@ public:
 
   /// Accessor to get the current propagator
   std::shared_ptr<Propagator> get_propagator() { return propagator; }
+
+  /// 返回足式辅助是否在配置中启用。
+  bool leg_velocity_enabled() const { return params.leg_velocity_enabled; }
+
+  /// 返回最近一次足式辅助状态快照。
+  LegVelocityStatus get_leg_velocity_status() const;
 
   /// Get a nice visualization image of what tracks we have
   cv::Mat get_historical_viz_image();
@@ -176,6 +237,9 @@ protected:
    */
   void retriangulate_active_tracks(const ov_core::CameraData &message);
 
+  /// 根据本帧视觉质量切换模式，并在需要时执行足式速度更新。
+  void update_leg_velocity_aiding(const VisualUpdateStats &visual_stats);
+
   /// Manager parameters
   VioManagerOptions params;
 
@@ -205,6 +269,30 @@ protected:
 
   /// Our zero velocity tracker
   std::shared_ptr<UpdaterZeroVelocity> updaterZUPT;
+
+  /// 视觉失效时使用的足式速度更新器
+  std::shared_ptr<UpdaterLegVelocity> updaterLegVelocity;
+
+  struct VisualWindowSample {
+    double timestamp = -1.0;
+    size_t active_observations = 0;
+    size_t accepted = 0;
+  };
+
+  /// 足式速度缓存和状态机数据，回调只写缓存、相机线程负责消费。
+  std::deque<ov_core::LegVelocityData> leg_velocity_queue;
+  std::deque<VisualWindowSample> visual_window;
+  mutable std::mutex leg_velocity_mutex;
+  LegVelocityStatus leg_velocity_status;
+  LegVelocityMode leg_velocity_mode = LegVelocityMode::DISABLED;
+  Eigen::Matrix3d leg_R_BI = Eigen::Matrix3d::Identity();
+  Eigen::Vector3d leg_r_IB_in_I = Eigen::Vector3d::Zero();
+  bool leg_extrinsics_valid = false;
+  std::string leg_extrinsics_reason = "extrinsics_not_set";
+  int visual_zero_update_frames = 0;
+  double last_visual_update_time = -1.0;
+  double recovery_start_time = -1.0;
+  double last_consumed_leg_timestamp = -1.0;
 
   /// This is the queue of measurement times that have come in since we starting doing initialization
   /// After we initialize, we will want to prop & update to the latest timestamp quickly

@@ -86,6 +86,7 @@ list(APPEND LIBRARY_SOURCES
         src/update/UpdaterHelper.cpp
         src/update/UpdaterMSCKF.cpp
         src/update/UpdaterSLAM.cpp
+        src/update/UpdaterLegVelocity.cpp
         src/update/UpdaterZeroVelocity.cpp
 )
 if (catkin_FOUND AND ENABLE_ROS)
@@ -104,6 +105,11 @@ install(DIRECTORY src/
         DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 )
+
+# 足式速度数学测试不依赖 ROS，ROS1/无 ROS 构建也保持可运行。
+add_executable(test_leg_velocity src/test_leg_velocity.cpp)
+target_link_libraries(test_leg_velocity ov_msckf_lib ${thirdparty_libraries})
+install(TARGETS test_leg_velocity RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 
 ##################################################
@@ -157,4 +163,3 @@ install(TARGETS test_sim_repeat
         LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
         RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
-
