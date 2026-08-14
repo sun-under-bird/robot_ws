@@ -273,15 +273,8 @@ protected:
   /// 视觉失效时使用的足式速度更新器
   std::shared_ptr<UpdaterLegVelocity> updaterLegVelocity;
 
-  struct VisualWindowSample {
-    double timestamp = -1.0;
-    size_t active_observations = 0;
-    size_t accepted = 0;
-  };
-
-  /// 足式速度缓存和状态机数据，回调只写缓存、相机线程负责消费。
+  /// 足式速度缓存和非对称迟滞状态，回调只写缓存、相机线程负责消费。
   std::deque<ov_core::LegVelocityData> leg_velocity_queue;
-  std::deque<VisualWindowSample> visual_window;
   mutable std::mutex leg_velocity_mutex;
   LegVelocityStatus leg_velocity_status;
   LegVelocityMode leg_velocity_mode = LegVelocityMode::DISABLED;
@@ -289,10 +282,9 @@ protected:
   Eigen::Vector3d leg_r_IB_in_I = Eigen::Vector3d::Zero();
   bool leg_extrinsics_valid = false;
   std::string leg_extrinsics_reason = "extrinsics_not_set";
-  int visual_zero_update_frames = 0;
-  double last_visual_update_time = -1.0;
-  double recovery_start_time = -1.0;
   double last_consumed_leg_timestamp = -1.0;
+  double visual_recovery_start_time = -1.0;
+  size_t visual_recovery_accepted = 0;
 
   /// This is the queue of measurement times that have come in since we starting doing initialization
   /// After we initialize, we will want to prop & update to the latest timestamp quickly

@@ -109,19 +109,19 @@ struct VioManagerOptions {
   /// 足式速度观测允许的最大消息年龄
   double leg_velocity_max_age = 0.15;
 
-  /// 判定视觉失效所需的连续无更新帧数
+  /// 保留用于配置兼容；视觉丢失现在在首个无视觉更新帧立即触发
   int leg_velocity_loss_frames = 3;
 
-  /// 判定视觉失效的最大无更新时长
+  /// 保留用于配置兼容；视觉丢失现在不再等待该超时
   double leg_velocity_loss_time = 0.2;
 
-  /// 视觉恢复后继续联合约束的稳定时长
+  /// 视觉恢复必须连续稳定达到的最短时间
   double leg_velocity_recovery_time = 0.5;
 
-  /// 视觉恢复所需的最少活动观测数
+  /// 视觉恢复期间每帧所需的最少活动观测数
   int leg_velocity_min_active_observations = 60;
 
-  /// 视觉恢复窗口内所需的最少通过约束数
+  /// 连续稳定恢复期间累计所需的最少视觉约束数
   int leg_velocity_recovery_accepted = 10;
 
   /// 水平速度观测方差下限
@@ -198,8 +198,9 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - leg velocity use vertical?: %d\n", leg_velocity_use_vertical);
     PRINT_DEBUG("  - leg velocity use yaw rate?: %d\n", leg_velocity_use_yaw_rate);
     PRINT_DEBUG("  - leg velocity max age: %.3f\n", leg_velocity_max_age);
-    PRINT_DEBUG("  - leg velocity loss: %d frames / %.3f sec\n", leg_velocity_loss_frames, leg_velocity_loss_time);
-    PRINT_DEBUG("  - leg velocity recovery time: %.3f sec\n", leg_velocity_recovery_time);
+    PRINT_DEBUG("  - leg velocity switching: immediate loss / hysteretic recovery\n");
+    PRINT_DEBUG("  - leg velocity recovery: %.3fs, active >= %d, accepted >= %d\n", leg_velocity_recovery_time,
+                leg_velocity_min_active_observations, leg_velocity_recovery_accepted);
     PRINT_DEBUG("  - record timing?: %d\n", (int)record_timing_information);
     PRINT_DEBUG("  - record timing filepath: %s\n", record_timing_filepath.c_str());
   }

@@ -230,11 +230,11 @@ VioManagerOptions make_manager_options(bool enabled) {
   options.state_options.num_cameras = 1;
   options.init_options.num_cameras = 1;
   options.leg_velocity_enabled = enabled;
-  options.leg_velocity_loss_frames = 3;
-  options.leg_velocity_loss_time = 0.2;
-  options.leg_velocity_recovery_time = 0.5;
-  options.leg_velocity_min_active_observations = 60;
-  options.leg_velocity_recovery_accepted = 10;
+  options.vec_dw << 1.0, 0.0, 0.0, 1.0, 0.0, 1.0;
+  options.vec_da = options.vec_dw;
+  options.vec_tg.setZero();
+  options.q_GYROtoIMU << 0.0, 0.0, 0.0, 1.0;
+  options.q_ACCtoIMU = options.q_GYROtoIMU;
   auto camera = std::make_shared<CamRadtan>(640, 480);
   Eigen::VectorXd calibration(8);
   calibration << 400.0, 400.0, 320.0, 240.0, 0.0, 0.0, 0.0, 0.0;
@@ -248,8 +248,14 @@ VioManagerOptions make_manager_options(bool enabled) {
   return options;
 }
 
-/// 覆盖默认关闭、初始化等待、视觉丢失、足式不可用和视觉稳定恢复状态。
+/// 覆盖视觉丢失立即接管、恢复迟滞、时间插值、足式不可用和卡方拒绝状态。
 bool test_visual_state_machine() {
+  const auto initialize_filter_covariance = [](TestVioManager &target) {
+    const Eigen::Matrix<double, 15, 15> imu_covariance =
+        0.01 * Eigen::Matrix<double, 15, 15>::Identity();
+    StateHelper::set_initial_covariance(target.get_state(), imu_covariance, {target.get_state()->_imu});
+  };
+
   VioManagerOptions disabled_options = make_manager_options(false);
   TestVioManager disabled(disabled_options);
   VisualUpdateStats stats;
@@ -263,7 +269,11 @@ bool test_visual_state_machine() {
   }
 
   VioManagerOptions enabled_options = make_manager_options(true);
+  enabled_options.leg_velocity_recovery_time = 0.20;
+  enabled_options.leg_velocity_min_active_observations = 50;
+  enabled_options.leg_velocity_recovery_accepted = 12;
   TestVioManager manager(enabled_options);
+  initialize_filter_covariance(manager);
   if (manager.get_leg_velocity_status().mode != LegVelocityMode::WAITING) {
     std::cerr << "初始化等待状态失败" << std::endl;
     return false;
@@ -271,69 +281,137 @@ bool test_visual_state_machine() {
   manager.set_leg_velocity_extrinsics(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
   manager.update_leg_velocity_aiding(stats);
   if (manager.get_leg_velocity_status().mode != LegVelocityMode::VISUAL_ONLY) {
-    std::cerr << "初始化完成后进入视觉模式失败" << std::endl;
+    std::cerr << "有视觉约束时进入纯视觉模式失败" << std::endl;
     return false;
   }
 
-  // 放入一条已经过期的足式消息，确认视觉丢失后不会误用旧观测。
-  LegVelocityData stale_measurement;
-  stale_measurement.timestamp = 0.90;
-  stale_measurement.measurement.setZero();
-  stale_measurement.covariance = 0.1 * Eigen::Matrix4d::Identity();
-  manager.feed_measurement_leg_velocity(stale_measurement);
-
-  stats.msckf_accepted = 0;
-  stats.active_observations = 80;
-  for (double timestamp : {1.05, 1.10, 1.15}) {
-    stats.timestamp = timestamp;
-    manager.update_leg_velocity_aiding(stats);
-  }
-  const LegVelocityStatus lost_status = manager.get_leg_velocity_status();
-  if (lost_status.mode != LegVelocityMode::IMU_ONLY || lost_status.reason != "leg_measurement_unavailable") {
-    std::cerr << "视觉丢失或足式超时状态失败，reason=" << lost_status.reason << std::endl;
-    return false;
-  }
-
-  // 恢复期要求视觉和足式速度同时有效，为每个相机时刻准备可插值 IMU 和新足式观测。
-  const auto feed_valid_leg_measurement = [&manager](double timestamp) {
-    manager.get_state()->_timestamp = timestamp;
+  // 第一帧没有视觉约束时必须立即使用同一时刻的足式速度，不能等待累计丢失帧数。
+  const auto feed_imu_at = [](TestVioManager &target, double timestamp) {
+    target.get_state()->_timestamp = timestamp;
     ImuData imu_before;
     imu_before.timestamp = timestamp - 0.01;
     imu_before.wm.setZero();
     imu_before.am.setZero();
     ImuData imu_after = imu_before;
     imu_after.timestamp = timestamp + 0.01;
-    manager.feed_measurement_imu(imu_before);
-    manager.feed_measurement_imu(imu_after);
+    target.feed_measurement_imu(imu_before);
+    target.feed_measurement_imu(imu_after);
+  };
+  const auto feed_leg = [](TestVioManager &target, double timestamp, const Eigen::Vector4d &velocity) {
     LegVelocityData measurement;
     measurement.timestamp = timestamp;
-    measurement.measurement.setZero();
+    measurement.measurement = velocity;
     measurement.covariance = 0.1 * Eigen::Matrix4d::Identity();
-    manager.feed_measurement_leg_velocity(measurement);
+    target.feed_measurement_leg_velocity(measurement);
   };
 
-  stats.timestamp = 1.20;
-  stats.msckf_accepted = 4;
-  feed_valid_leg_measurement(stats.timestamp);
+  stats.timestamp = 1.05;
+  stats.msckf_accepted = 0;
+  stats.active_observations = 80;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
   manager.update_leg_velocity_aiding(stats);
-  if (manager.get_leg_velocity_status().mode != LegVelocityMode::RECOVERING) {
-    std::cerr << "视觉恢复初期状态失败" << std::endl;
+  const LegVelocityStatus lost_status = manager.get_leg_velocity_status();
+  if (lost_status.mode != LegVelocityMode::LEG_ASSIST || !lost_status.update_accepted) {
+    std::cerr << "单帧视觉丢失未立即启用足式速度，reason=" << lost_status.reason << std::endl;
     return false;
   }
+
+  // 视觉刚恢复但活动观测不足时必须继续足式辅助，不能被少量视觉约束抢占。
+  stats.timestamp = 1.10;
+  stats.msckf_accepted = 4;
+  stats.active_observations = 40;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
+  manager.update_leg_velocity_aiding(stats);
+  const LegVelocityStatus weak_recovery_status = manager.get_leg_velocity_status();
+  if (weak_recovery_status.mode != LegVelocityMode::RECOVERING || !weak_recovery_status.update_accepted) {
+    std::cerr << "弱视觉恢复错误地停用了足式速度，reason=" << weak_recovery_status.reason << std::endl;
+    return false;
+  }
+
+  // 活动观测达到阈值后开始连续恢复窗口。
+  stats.timestamp = 1.15;
+  stats.active_observations = 80;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
+  manager.update_leg_velocity_aiding(stats);
+  if (manager.get_leg_velocity_status().mode != LegVelocityMode::RECOVERING) {
+    std::cerr << "稳定视觉首帧未保持恢复模式" << std::endl;
+    return false;
+  }
+
+  // 恢复窗口内任何一帧没有视觉更新，都必须立即重新启用足式并清空恢复进度。
+  stats.timestamp = 1.20;
+  stats.msckf_accepted = 0;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
+  manager.update_leg_velocity_aiding(stats);
+  if (manager.get_leg_velocity_status().mode != LegVelocityMode::LEG_ASSIST) {
+    std::cerr << "视觉恢复中断后未立即回到足式辅助" << std::endl;
+    return false;
+  }
+
+  // 重新连续恢复：累计约束达到阈值但时间不足时仍不能停用足式。
+  stats.msckf_accepted = 6;
   stats.timestamp = 1.25;
-  stats.msckf_accepted = 4;
-  feed_valid_leg_measurement(stats.timestamp);
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
   manager.update_leg_velocity_aiding(stats);
-  stats.timestamp = 1.45;
-  stats.msckf_accepted = 4;
-  feed_valid_leg_measurement(stats.timestamp);
+  stats.timestamp = 1.36;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Zero());
   manager.update_leg_velocity_aiding(stats);
-  stats.timestamp = 1.71;
-  stats.active_observations = 60;
-  stats.msckf_accepted = 4;
+  if (manager.get_leg_velocity_status().mode != LegVelocityMode::RECOVERING) {
+    std::cerr << "视觉恢复时间不足时过早停用了足式" << std::endl;
+    return false;
+  }
+
+  // 连续时间和累计约束均达标后才回到纯视觉；该帧不得再消费足式消息。
+  stats.timestamp = 1.46;
+  feed_imu_at(manager, stats.timestamp);
+  feed_leg(manager, stats.timestamp, Eigen::Vector4d::Constant(4.9));
   manager.update_leg_velocity_aiding(stats);
-  if (manager.get_leg_velocity_status().mode != LegVelocityMode::VISUAL_ONLY) {
-    std::cerr << "视觉稳定恢复退出足式辅助失败" << std::endl;
+  const LegVelocityStatus recovered_status = manager.get_leg_velocity_status();
+  if (recovered_status.mode != LegVelocityMode::VISUAL_ONLY || recovered_status.update_accepted ||
+      recovered_status.reason != "visual_recovery_stable") {
+    std::cerr << "视觉连续稳定后未停用足式速度，reason=" << recovered_status.reason << std::endl;
+    return false;
+  }
+
+  // 再次出现单帧视觉丢失但没有可用的新足式消息时，应立即报告仅 IMU。
+  stats.timestamp = 1.80;
+  stats.msckf_accepted = 0;
+  manager.update_leg_velocity_aiding(stats);
+  const LegVelocityStatus unavailable_status = manager.get_leg_velocity_status();
+  if (unavailable_status.mode != LegVelocityMode::IMU_ONLY || unavailable_status.reason != "leg_measurement_unavailable") {
+    std::cerr << "单帧视觉丢失或足式不可用状态失败，reason=" << unavailable_status.reason << std::endl;
+    return false;
+  }
+
+  // 足式消息位于图像时刻两侧时，应插值到图像时刻；正负速度插值后的创新应接近零。
+  VioManagerOptions interpolation_options = make_manager_options(true);
+  TestVioManager interpolation_manager(interpolation_options);
+  initialize_filter_covariance(interpolation_manager);
+  interpolation_manager.set_leg_velocity_extrinsics(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+  VisualUpdateStats interpolation_stats;
+  interpolation_stats.timestamp = 2.0;
+  interpolation_stats.active_observations = 100;
+  interpolation_stats.msckf_accepted = 5;
+  interpolation_manager.update_leg_velocity_aiding(interpolation_stats);
+  interpolation_stats.timestamp = 2.05;
+  interpolation_stats.msckf_accepted = 0;
+  feed_imu_at(interpolation_manager, interpolation_stats.timestamp);
+  Eigen::Vector4d velocity_before;
+  velocity_before << 0.02, -0.02, 0.0, 0.0;
+  feed_leg(interpolation_manager, 2.04, velocity_before);
+  feed_leg(interpolation_manager, 2.06, -velocity_before);
+  interpolation_manager.update_leg_velocity_aiding(interpolation_stats);
+  const LegVelocityStatus interpolation_status = interpolation_manager.get_leg_velocity_status();
+  if (interpolation_status.mode != LegVelocityMode::LEG_ASSIST || !interpolation_status.update_accepted ||
+      std::abs(interpolation_status.measurement_age) > 1e-9 || interpolation_status.innovation.head<2>().norm() > 1e-9) {
+    std::cerr << "足式速度未正确插值到图像时刻，age=" << interpolation_status.measurement_age
+              << " innovation=" << interpolation_status.innovation.transpose() << std::endl;
     return false;
   }
 

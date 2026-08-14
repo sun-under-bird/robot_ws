@@ -270,6 +270,7 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
     return;
   }
 
+  std::string mode_reason;
   const auto change_mode = [&](LegVelocityMode new_mode, const std::string &reason) {
     if (leg_velocity_mode != new_mode) {
       PRINT_INFO("[OV-LEG] t=%.6f mode=%s->%s active=%zu accepted=%zu reason=%s\n", visual_stats.timestamp,
@@ -277,52 +278,75 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
                  visual_stats.accepted_total(), reason.c_str());
     }
     leg_velocity_mode = new_mode;
+    mode_reason = reason;
   };
 
   const size_t accepted = visual_stats.accepted_total();
-  visual_window.push_back({visual_stats.timestamp, visual_stats.active_observations, accepted});
-  while (!visual_window.empty() && visual_window.front().timestamp < visual_stats.timestamp - params.leg_velocity_recovery_time) {
-    visual_window.pop_front();
-  }
-
-  if (leg_velocity_mode == LegVelocityMode::WAITING) {
-    change_mode(LegVelocityMode::VISUAL_ONLY, "vio_initialized");
-    last_visual_update_time = visual_stats.timestamp;
-    visual_zero_update_frames = 0;
-  }
-  if (accepted > 0) {
-    last_visual_update_time = visual_stats.timestamp;
-    visual_zero_update_frames = 0;
-  } else {
-    ++visual_zero_update_frames;
-  }
-  const bool visual_lost = visual_zero_update_frames >= std::max(1, params.leg_velocity_loss_frames) ||
-                           (last_visual_update_time > 0.0 &&
-                            visual_stats.timestamp - last_visual_update_time >= params.leg_velocity_loss_time);
-
-  if (leg_velocity_mode == LegVelocityMode::VISUAL_ONLY && visual_lost) {
-    change_mode(LegVelocityMode::IMU_ONLY, "visual_update_lost");
-  } else if ((leg_velocity_mode == LegVelocityMode::LEG_ASSIST || leg_velocity_mode == LegVelocityMode::IMU_ONLY) && accepted > 0) {
-    recovery_start_time = visual_stats.timestamp;
-    change_mode(LegVelocityMode::RECOVERING, "visual_update_resumed");
-  } else if (leg_velocity_mode == LegVelocityMode::RECOVERING) {
-    if (visual_lost) {
-      recovery_start_time = -1.0;
-      change_mode(LegVelocityMode::IMU_ONLY, "visual_recovery_interrupted");
+  const auto reset_visual_recovery = [&]() {
+    visual_recovery_start_time = -1.0;
+    visual_recovery_accepted = 0;
+  };
+  const size_t minimum_active = static_cast<size_t>(std::max(0, params.leg_velocity_min_active_observations));
+  const size_t minimum_accepted = static_cast<size_t>(std::max(0, params.leg_velocity_recovery_accepted));
+  const bool recovery_sample_stable = accepted > 0 && visual_stats.active_observations >= minimum_active;
+  const auto extend_visual_recovery = [&]() {
+    if (!recovery_sample_stable) {
+      reset_visual_recovery();
+      return false;
+    }
+    if (visual_recovery_start_time < 0.0 || visual_stats.timestamp < visual_recovery_start_time) {
+      visual_recovery_start_time = visual_stats.timestamp;
+      visual_recovery_accepted = accepted;
     } else {
-      size_t recovery_accepted = 0;
-      for (const auto &sample : visual_window) {
-        recovery_accepted += sample.accepted;
-      }
-      const bool recovery_duration_ok = recovery_start_time > 0.0 &&
-                                        visual_stats.timestamp - recovery_start_time >= params.leg_velocity_recovery_time;
-      if (recovery_duration_ok && visual_stats.active_observations >= static_cast<size_t>(params.leg_velocity_min_active_observations) &&
-          recovery_accepted >= static_cast<size_t>(params.leg_velocity_recovery_accepted)) {
-        recovery_start_time = -1.0;
+      visual_recovery_accepted += accepted;
+    }
+    const double recovery_duration = visual_stats.timestamp - visual_recovery_start_time;
+    return recovery_duration >= std::max(0.0, params.leg_velocity_recovery_time) &&
+           visual_recovery_accepted >= minimum_accepted;
+  };
+
+  // 非对称迟滞：视觉首次没有实际 EKF 更新时立即启用足式；进入足式辅助后，
+  // 即使视觉重新出现也继续联合约束，直到连续恢复时间、活动观测数和累计接受数全部达标。
+  switch (leg_velocity_mode) {
+  case LegVelocityMode::WAITING:
+    reset_visual_recovery();
+    change_mode(accepted > 0 ? LegVelocityMode::VISUAL_ONLY : LegVelocityMode::IMU_ONLY,
+                accepted > 0 ? "vio_initialized_with_visual" : "visual_update_missing");
+    break;
+  case LegVelocityMode::VISUAL_ONLY:
+    if (accepted == 0) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::IMU_ONLY, "visual_update_missing");
+    }
+    break;
+  case LegVelocityMode::LEG_ASSIST:
+  case LegVelocityMode::IMU_ONLY:
+    if (accepted > 0) {
+      change_mode(LegVelocityMode::RECOVERING, "visual_recovery_started");
+      if (extend_visual_recovery()) {
+        reset_visual_recovery();
         change_mode(LegVelocityMode::VISUAL_ONLY, "visual_recovery_stable");
       }
+    } else {
+      reset_visual_recovery();
     }
+    break;
+  case LegVelocityMode::RECOVERING:
+    if (accepted == 0) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::IMU_ONLY, "visual_recovery_interrupted");
+    } else if (extend_visual_recovery()) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::VISUAL_ONLY, "visual_recovery_stable");
+    }
+    break;
+  case LegVelocityMode::DISABLED:
+    return;
   }
+
+  const bool should_use_leg = leg_velocity_mode == LegVelocityMode::LEG_ASSIST ||
+                              leg_velocity_mode == LegVelocityMode::IMU_ONLY ||
+                              leg_velocity_mode == LegVelocityMode::RECOVERING;
 
   {
     std::lock_guard<std::mutex> lock(leg_velocity_mutex);
@@ -342,17 +366,21 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
     leg_velocity_status.chi2 = -1.0;
     leg_velocity_status.chi2_threshold = -1.0;
     leg_velocity_status.innovation.setConstant(std::numeric_limits<double>::quiet_NaN());
-    leg_velocity_status.reason = leg_velocity_mode == LegVelocityMode::VISUAL_ONLY ? "visual_healthy" : "no_new_measurement";
+    if (should_use_leg) {
+      leg_velocity_status.reason = leg_velocity_mode == LegVelocityMode::RECOVERING ? "visual_recovery_pending"
+                                                                                    : "leg_measurement_pending";
+    } else {
+      leg_velocity_status.reason = mode_reason.empty() ? "visual_update_accepted" : mode_reason;
+    }
   }
 
-  const bool should_use_leg = leg_velocity_mode == LegVelocityMode::LEG_ASSIST || leg_velocity_mode == LegVelocityMode::IMU_ONLY ||
-                              leg_velocity_mode == LegVelocityMode::RECOVERING;
   if (!should_use_leg) {
     return;
   }
 
   ov_core::LegVelocityData selected;
   bool has_measurement = false;
+  double consumed_through_timestamp = -1.0;
   bool extrinsics_valid = false;
   std::string extrinsics_reason;
   Eigen::Matrix3d R_BI;
@@ -367,16 +395,41 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
            leg_velocity_queue.front().timestamp + params.leg_velocity_time_offset < visual_stats.timestamp - params.leg_velocity_max_age) {
       leg_velocity_queue.pop_front();
     }
-    for (const auto &candidate : leg_velocity_queue) {
-      const double effective_time = candidate.timestamp + params.leg_velocity_time_offset;
-      if (effective_time <= visual_stats.timestamp && candidate.timestamp > last_consumed_leg_timestamp) {
-        selected = candidate;
-        has_measurement = true;
+    auto before = leg_velocity_queue.end();
+    auto after = leg_velocity_queue.end();
+    for (auto candidate = leg_velocity_queue.begin(); candidate != leg_velocity_queue.end(); ++candidate) {
+      const double effective_time = candidate->timestamp + params.leg_velocity_time_offset;
+      if (effective_time <= visual_stats.timestamp && candidate->timestamp > last_consumed_leg_timestamp) {
+        before = candidate;
+      } else if (effective_time > visual_stats.timestamp) {
+        after = candidate;
+        break;
       }
     }
-    if (has_measurement) {
-      last_consumed_leg_timestamp = selected.timestamp;
-      while (!leg_velocity_queue.empty() && leg_velocity_queue.front().timestamp <= selected.timestamp) {
+
+    if (before != leg_velocity_queue.end()) {
+      selected = *before;
+      consumed_through_timestamp = before->timestamp;
+      has_measurement = true;
+
+      // 图像处理有传输延迟时，队列通常已经包含图像时刻之后的足式消息。
+      // 用前后两条观测线性插值，使送入 EKF 的速度对应当前图像的时间戳。
+      if (after != leg_velocity_queue.end() &&
+          after->timestamp + params.leg_velocity_time_offset - visual_stats.timestamp <= params.leg_velocity_max_age) {
+        const double before_time = before->timestamp + params.leg_velocity_time_offset;
+        const double after_time = after->timestamp + params.leg_velocity_time_offset;
+        const double interval = after_time - before_time;
+        if (interval > 1e-9) {
+          const double alpha = (visual_stats.timestamp - before_time) / interval;
+          selected.timestamp = visual_stats.timestamp - params.leg_velocity_time_offset;
+          selected.measurement = (1.0 - alpha) * before->measurement + alpha * after->measurement;
+          // 使用凸组合保持协方差半正定，同时避免把高频相邻消息误当成独立观测而过度收紧方差。
+          selected.covariance = (1.0 - alpha) * before->covariance + alpha * after->covariance;
+        }
+      }
+
+      last_consumed_leg_timestamp = consumed_through_timestamp;
+      while (!leg_velocity_queue.empty() && leg_velocity_queue.front().timestamp <= consumed_through_timestamp) {
         leg_velocity_queue.pop_front();
       }
       leg_velocity_status.measurement_age = visual_stats.timestamp - (selected.timestamp + params.leg_velocity_time_offset);
@@ -384,6 +437,7 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
   }
 
   if (!extrinsics_valid || !has_measurement) {
+    reset_visual_recovery();
     if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
       change_mode(LegVelocityMode::IMU_ONLY, extrinsics_valid ? "leg_measurement_unavailable" : extrinsics_reason);
     }
@@ -398,6 +452,7 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
   if (!selected.measurement.allFinite() || selected_linear_speed > params.leg_velocity_max_linear_speed ||
       (params.leg_velocity_use_vertical && std::abs(selected.measurement(2)) > params.leg_velocity_max_vertical_speed) ||
       (params.leg_velocity_use_yaw_rate && std::abs(selected.measurement(3)) > params.leg_velocity_max_yaw_rate)) {
+    reset_visual_recovery();
     if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
       change_mode(LegVelocityMode::IMU_ONLY, "leg_measurement_out_of_range");
     }
@@ -408,8 +463,9 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
   }
 
   ov_core::ImuData interpolated_imu;
-  const double imu_timestamp = state->_timestamp + state->_calib_dt_CAMtoIMU->value()(0);
+  const double imu_timestamp = visual_stats.timestamp + state->_calib_dt_CAMtoIMU->value()(0);
   if (!propagator->get_interpolated_imu(imu_timestamp, interpolated_imu)) {
+    reset_visual_recovery();
     if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
       change_mode(LegVelocityMode::IMU_ONLY, "imu_interpolation_unavailable");
     }
@@ -425,8 +481,11 @@ void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stat
     if (leg_velocity_mode == LegVelocityMode::IMU_ONLY) {
       change_mode(LegVelocityMode::LEG_ASSIST, "leg_update_accepted");
     }
-  } else if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
-    change_mode(LegVelocityMode::IMU_ONLY, update_result.reason);
+  } else {
+    reset_visual_recovery();
+    if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::IMU_ONLY, update_result.reason);
+    }
   }
   {
     std::lock_guard<std::mutex> lock(leg_velocity_mutex);
