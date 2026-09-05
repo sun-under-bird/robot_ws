@@ -44,6 +44,8 @@ def generate_launch_description():
     orientation_imu_topic = LaunchConfiguration("orientation_imu_topic")
     odom_topic = LaunchConfiguration("odom_topic")
     odom_info_topic = LaunchConfiguration("odom_info_topic")
+    leg_velocity_enabled = LaunchConfiguration("leg_velocity_enabled")
+    leg_odom_topic = LaunchConfiguration("leg_odom_topic")
     map_topic = LaunchConfiguration("map_topic")
     local_grid_obstacle_topic = LaunchConfiguration(
         "local_grid_obstacle_topic")
@@ -177,7 +179,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "imu_topic",
-            default_value="/camera/camera/imu",
+            default_value="/imu/data_raw",
             description="OpenVINS 使用的原始 IMU 话题。",
         ),
         DeclareLaunchArgument(
@@ -201,6 +203,16 @@ def generate_launch_description():
                 "OpenVINS odometry info 话题，"
                 "RTAB-Map 用它读取特征/内点统计。"
             ),
+        ),
+        DeclareLaunchArgument(
+            "leg_velocity_enabled",
+            default_value="false",
+            description="视觉退化时是否启用 OpenVINS 内部足式速度辅助。",
+        ),
+        DeclareLaunchArgument(
+            "leg_odom_topic",
+            default_value="/odom_leg",
+            description="足式运动学里程计话题。",
         ),
         DeclareLaunchArgument(
             "map_topic",
@@ -241,7 +253,9 @@ def generate_launch_description():
         executable="stereo_odometry",
         name="openvins_stereo_odometry",
         namespace=namespace,
-        output="screen",
+        # 同时写屏幕和 launch 进程日志，确保 OpenVINS 原生诊断可在运行后复查。
+        output="both",
+        emulate_tty=True,
         parameters=[
             params_file,
             {
@@ -251,6 +265,9 @@ def generate_launch_description():
                 "publish_tf": ParameterValue(
                     publish_odom_tf, value_type=bool),
                 "OdomOpenVINS/ConfigPath": openvins_config_path,
+                # 默认关闭；只有独立足式辅助入口会显式设为 true。
+                "OdomOpenVINS/LegVelocityEnabled": ParameterValue(
+                    leg_velocity_enabled, value_type=str),
                 # RTAB-Map core 参数在 ROS 2 中按字符串传递。
                 "Reg/Force3DoF": ParameterValue(
                     planar_mode, value_type=str),
@@ -266,10 +283,12 @@ def generate_launch_description():
             ("left/camera_info", odom_left_info_topic),
             ("right/camera_info", odom_right_info_topic),
             ("imu", imu_topic),
+            ("leg_odom", leg_odom_topic),
             ("odom", odom_topic),
             ("odom_info", odom_info_topic),
         ],
-        arguments=["--ros-args", "--log-level", log_level],
+        # --uinfo 打开 RTAB-Map core/OpenVINS 的 INFO 输出；ROS 日志等级仍由 log_level 控制。
+        arguments=["--uinfo", "--ros-args", "--log-level", log_level],
     )
 
     rtabmap_common_parameters = [

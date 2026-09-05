@@ -40,12 +40,36 @@
 #include "state/State.h"
 #include "state/StateHelper.h"
 #include "update/UpdaterMSCKF.h"
+#include "update/UpdaterLegVelocity.h"
 #include "update/UpdaterSLAM.h"
 #include "update/UpdaterZeroVelocity.h"
 
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
+
+namespace {
+
+/// 将足式辅助枚举转换为稳定的诊断字符串。
+const char *leg_velocity_mode_name(LegVelocityMode mode) {
+  switch (mode) {
+  case LegVelocityMode::DISABLED:
+    return "DISABLED";
+  case LegVelocityMode::WAITING:
+    return "WAITING";
+  case LegVelocityMode::VISUAL_ONLY:
+    return "VISUAL_ONLY";
+  case LegVelocityMode::LEG_ASSIST:
+    return "LEG_ASSIST";
+  case LegVelocityMode::IMU_ONLY:
+    return "IMU_ONLY";
+  case LegVelocityMode::RECOVERING:
+    return "RECOVERING";
+  }
+  return "UNKNOWN";
+}
+
+} // namespace
 
 VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false), thread_init_success(false) {
 
@@ -161,6 +185,15 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
                                                         propagator, params.gravity_mag, params.zupt_max_velocity,
                                                         params.zupt_noise_multiplier, params.zupt_max_disparity);
   }
+
+  leg_velocity_mode = params.leg_velocity_enabled ? LegVelocityMode::WAITING : LegVelocityMode::DISABLED;
+  leg_velocity_status.mode = leg_velocity_mode;
+  leg_velocity_status.reason = params.leg_velocity_enabled ? "waiting_for_vio" : "disabled";
+  if (params.leg_velocity_enabled) {
+    updaterLegVelocity = std::make_shared<UpdaterLegVelocity>(
+        params.leg_velocity_use_vertical, params.leg_velocity_use_yaw_rate, params.leg_velocity_horizontal_variance_floor,
+        params.leg_velocity_vertical_variance_floor, params.leg_velocity_yaw_rate_variance_floor, params.leg_velocity_chi2_multiplier);
+  }
 }
 
 void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
@@ -186,6 +219,291 @@ void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
   if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt)) {
     updaterZUPT->feed_imu(message, oldest_time);
   }
+}
+
+void VioManager::feed_measurement_leg_velocity(const ov_core::LegVelocityData &message) {
+  if (!params.leg_velocity_enabled) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+  leg_velocity_queue.push_back(message);
+  std::sort(leg_velocity_queue.begin(), leg_velocity_queue.end());
+  while (leg_velocity_queue.size() > 200) {
+    leg_velocity_queue.pop_front();
+  }
+}
+
+void VioManager::set_leg_velocity_extrinsics(const Eigen::Matrix3d &R_BI, const Eigen::Vector3d &r_IB_in_I) {
+  std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+  leg_R_BI = R_BI;
+  leg_r_IB_in_I = r_IB_in_I;
+  leg_extrinsics_valid = R_BI.allFinite() && r_IB_in_I.allFinite() && std::abs(R_BI.determinant() - 1.0) < 1e-3 &&
+                         (R_BI.transpose() * R_BI).isApprox(Eigen::Matrix3d::Identity(), 1e-6);
+  leg_velocity_status.lever_arm = r_IB_in_I;
+  if (!leg_extrinsics_valid) {
+    leg_extrinsics_reason = "invalid_extrinsics";
+    leg_velocity_status.reason = leg_extrinsics_reason;
+  } else {
+    leg_extrinsics_reason.clear();
+    PRINT_INFO("[OV-LEG] R_BI=[%.6f %.6f %.6f; %.6f %.6f %.6f; %.6f %.6f %.6f] r_IB_I=[%.4f %.4f %.4f]\n",
+               R_BI(0, 0), R_BI(0, 1), R_BI(0, 2), R_BI(1, 0), R_BI(1, 1), R_BI(1, 2), R_BI(2, 0), R_BI(2, 1),
+               R_BI(2, 2), r_IB_in_I(0), r_IB_in_I(1), r_IB_in_I(2));
+  }
+}
+
+void VioManager::disable_leg_velocity_extrinsics(const std::string &reason) {
+  // 外参一旦在运行中失效就不自动恢复，避免使用跳变后的 TF 污染滤波状态。
+  std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+  leg_extrinsics_valid = false;
+  leg_extrinsics_reason = reason.empty() ? "invalid_extrinsics" : reason;
+  leg_velocity_status.reason = leg_extrinsics_reason;
+  PRINT_WARNING(YELLOW "[OV-LEG] disabling leg velocity aiding: %s\n" RESET, reason.c_str());
+}
+
+LegVelocityStatus VioManager::get_leg_velocity_status() const {
+  std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+  return leg_velocity_status;
+}
+
+void VioManager::update_leg_velocity_aiding(const VisualUpdateStats &visual_stats) {
+  if (!params.leg_velocity_enabled || updaterLegVelocity == nullptr) {
+    return;
+  }
+
+  std::string mode_reason;
+  const auto change_mode = [&](LegVelocityMode new_mode, const std::string &reason) {
+    if (leg_velocity_mode != new_mode) {
+      PRINT_INFO("[OV-LEG] t=%.6f mode=%s->%s active=%zu accepted=%zu reason=%s\n", visual_stats.timestamp,
+                 leg_velocity_mode_name(leg_velocity_mode), leg_velocity_mode_name(new_mode), visual_stats.active_observations,
+                 visual_stats.accepted_total(), reason.c_str());
+    }
+    leg_velocity_mode = new_mode;
+    mode_reason = reason;
+  };
+
+  const size_t accepted = visual_stats.accepted_total();
+  const auto reset_visual_recovery = [&]() {
+    visual_recovery_start_time = -1.0;
+    visual_recovery_accepted = 0;
+  };
+  const size_t minimum_active = static_cast<size_t>(std::max(0, params.leg_velocity_min_active_observations));
+  const size_t minimum_accepted = static_cast<size_t>(std::max(0, params.leg_velocity_recovery_accepted));
+  const bool recovery_sample_stable = accepted > 0 && visual_stats.active_observations >= minimum_active;
+  const auto extend_visual_recovery = [&]() {
+    if (!recovery_sample_stable) {
+      reset_visual_recovery();
+      return false;
+    }
+    if (visual_recovery_start_time < 0.0 || visual_stats.timestamp < visual_recovery_start_time) {
+      visual_recovery_start_time = visual_stats.timestamp;
+      visual_recovery_accepted = accepted;
+    } else {
+      visual_recovery_accepted += accepted;
+    }
+    const double recovery_duration = visual_stats.timestamp - visual_recovery_start_time;
+    return recovery_duration >= std::max(0.0, params.leg_velocity_recovery_time) &&
+           visual_recovery_accepted >= minimum_accepted;
+  };
+
+  // 非对称迟滞：视觉首次没有实际 EKF 更新时立即启用足式；进入足式辅助后，
+  // 即使视觉重新出现也继续联合约束，直到连续恢复时间、活动观测数和累计接受数全部达标。
+  switch (leg_velocity_mode) {
+  case LegVelocityMode::WAITING:
+    reset_visual_recovery();
+    change_mode(accepted > 0 ? LegVelocityMode::VISUAL_ONLY : LegVelocityMode::IMU_ONLY,
+                accepted > 0 ? "vio_initialized_with_visual" : "visual_update_missing");
+    break;
+  case LegVelocityMode::VISUAL_ONLY:
+    if (accepted == 0) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::IMU_ONLY, "visual_update_missing");
+    }
+    break;
+  case LegVelocityMode::LEG_ASSIST:
+  case LegVelocityMode::IMU_ONLY:
+    if (accepted > 0) {
+      change_mode(LegVelocityMode::RECOVERING, "visual_recovery_started");
+      if (extend_visual_recovery()) {
+        reset_visual_recovery();
+        change_mode(LegVelocityMode::VISUAL_ONLY, "visual_recovery_stable");
+      }
+    } else {
+      reset_visual_recovery();
+    }
+    break;
+  case LegVelocityMode::RECOVERING:
+    if (accepted == 0) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::IMU_ONLY, "visual_recovery_interrupted");
+    } else if (extend_visual_recovery()) {
+      reset_visual_recovery();
+      change_mode(LegVelocityMode::VISUAL_ONLY, "visual_recovery_stable");
+    }
+    break;
+  case LegVelocityMode::DISABLED:
+    return;
+  }
+
+  const bool should_use_leg = leg_velocity_mode == LegVelocityMode::LEG_ASSIST ||
+                              leg_velocity_mode == LegVelocityMode::IMU_ONLY ||
+                              leg_velocity_mode == LegVelocityMode::RECOVERING;
+
+  {
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    leg_velocity_status.mode = leg_velocity_mode;
+    leg_velocity_status.timestamp = visual_stats.timestamp;
+    leg_velocity_status.measurement_age = -1.0;
+    leg_velocity_status.active_observations = visual_stats.active_observations;
+    leg_velocity_status.visual_accepted = accepted;
+    leg_velocity_status.msckf_candidates = visual_stats.msckf_candidates;
+    leg_velocity_status.msckf_selected = visual_stats.msckf_selected;
+    leg_velocity_status.msckf_accepted = visual_stats.msckf_accepted;
+    leg_velocity_status.slam_update_candidates = visual_stats.slam_update_candidates;
+    leg_velocity_status.slam_update_accepted = visual_stats.slam_update_accepted;
+    leg_velocity_status.slam_init_candidates = visual_stats.slam_init_candidates;
+    leg_velocity_status.slam_init_accepted = visual_stats.slam_init_accepted;
+    leg_velocity_status.update_accepted = false;
+    leg_velocity_status.chi2 = -1.0;
+    leg_velocity_status.chi2_threshold = -1.0;
+    leg_velocity_status.innovation.setConstant(std::numeric_limits<double>::quiet_NaN());
+    if (should_use_leg) {
+      leg_velocity_status.reason = leg_velocity_mode == LegVelocityMode::RECOVERING ? "visual_recovery_pending"
+                                                                                    : "leg_measurement_pending";
+    } else {
+      leg_velocity_status.reason = mode_reason.empty() ? "visual_update_accepted" : mode_reason;
+    }
+  }
+
+  if (!should_use_leg) {
+    return;
+  }
+
+  ov_core::LegVelocityData selected;
+  bool has_measurement = false;
+  double consumed_through_timestamp = -1.0;
+  bool extrinsics_valid = false;
+  std::string extrinsics_reason;
+  Eigen::Matrix3d R_BI;
+  Eigen::Vector3d r_IB_in_I;
+  {
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    extrinsics_valid = leg_extrinsics_valid;
+    extrinsics_reason = leg_extrinsics_reason;
+    R_BI = leg_R_BI;
+    r_IB_in_I = leg_r_IB_in_I;
+    while (!leg_velocity_queue.empty() &&
+           leg_velocity_queue.front().timestamp + params.leg_velocity_time_offset < visual_stats.timestamp - params.leg_velocity_max_age) {
+      leg_velocity_queue.pop_front();
+    }
+    auto before = leg_velocity_queue.end();
+    auto after = leg_velocity_queue.end();
+    for (auto candidate = leg_velocity_queue.begin(); candidate != leg_velocity_queue.end(); ++candidate) {
+      const double effective_time = candidate->timestamp + params.leg_velocity_time_offset;
+      if (effective_time <= visual_stats.timestamp && candidate->timestamp > last_consumed_leg_timestamp) {
+        before = candidate;
+      } else if (effective_time > visual_stats.timestamp) {
+        after = candidate;
+        break;
+      }
+    }
+
+    if (before != leg_velocity_queue.end()) {
+      selected = *before;
+      consumed_through_timestamp = before->timestamp;
+      has_measurement = true;
+
+      // 图像处理有传输延迟时，队列通常已经包含图像时刻之后的足式消息。
+      // 用前后两条观测线性插值，使送入 EKF 的速度对应当前图像的时间戳。
+      if (after != leg_velocity_queue.end() &&
+          after->timestamp + params.leg_velocity_time_offset - visual_stats.timestamp <= params.leg_velocity_max_age) {
+        const double before_time = before->timestamp + params.leg_velocity_time_offset;
+        const double after_time = after->timestamp + params.leg_velocity_time_offset;
+        const double interval = after_time - before_time;
+        if (interval > 1e-9) {
+          const double alpha = (visual_stats.timestamp - before_time) / interval;
+          selected.timestamp = visual_stats.timestamp - params.leg_velocity_time_offset;
+          selected.measurement = (1.0 - alpha) * before->measurement + alpha * after->measurement;
+          // 使用凸组合保持协方差半正定，同时避免把高频相邻消息误当成独立观测而过度收紧方差。
+          selected.covariance = (1.0 - alpha) * before->covariance + alpha * after->covariance;
+        }
+      }
+
+      last_consumed_leg_timestamp = consumed_through_timestamp;
+      while (!leg_velocity_queue.empty() && leg_velocity_queue.front().timestamp <= consumed_through_timestamp) {
+        leg_velocity_queue.pop_front();
+      }
+      leg_velocity_status.measurement_age = visual_stats.timestamp - (selected.timestamp + params.leg_velocity_time_offset);
+    }
+  }
+
+  if (!extrinsics_valid || !has_measurement) {
+    reset_visual_recovery();
+    if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::IMU_ONLY, extrinsics_valid ? "leg_measurement_unavailable" : extrinsics_reason);
+    }
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    leg_velocity_status.mode = leg_velocity_mode;
+    leg_velocity_status.reason = extrinsics_valid ? "leg_measurement_unavailable" : extrinsics_reason;
+    return;
+  }
+
+  const Eigen::Vector3d linear_velocity = selected.measurement.head<3>();
+  const double selected_linear_speed = params.leg_velocity_use_vertical ? linear_velocity.norm() : linear_velocity.head<2>().norm();
+  if (!selected.measurement.allFinite() || selected_linear_speed > params.leg_velocity_max_linear_speed ||
+      (params.leg_velocity_use_vertical && std::abs(selected.measurement(2)) > params.leg_velocity_max_vertical_speed) ||
+      (params.leg_velocity_use_yaw_rate && std::abs(selected.measurement(3)) > params.leg_velocity_max_yaw_rate)) {
+    reset_visual_recovery();
+    if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::IMU_ONLY, "leg_measurement_out_of_range");
+    }
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    leg_velocity_status.mode = leg_velocity_mode;
+    leg_velocity_status.reason = "leg_measurement_out_of_range";
+    return;
+  }
+
+  ov_core::ImuData interpolated_imu;
+  const double imu_timestamp = visual_stats.timestamp + state->_calib_dt_CAMtoIMU->value()(0);
+  if (!propagator->get_interpolated_imu(imu_timestamp, interpolated_imu)) {
+    reset_visual_recovery();
+    if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::IMU_ONLY, "imu_interpolation_unavailable");
+    }
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    leg_velocity_status.mode = leg_velocity_mode;
+    leg_velocity_status.reason = "imu_interpolation_unavailable";
+    return;
+  }
+
+  const LegVelocityUpdateResult update_result = updaterLegVelocity->update(state, selected, interpolated_imu, R_BI, r_IB_in_I);
+  if (update_result.accepted) {
+    propagator->invalidate_cache();
+    if (leg_velocity_mode == LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::LEG_ASSIST, "leg_update_accepted");
+    }
+  } else {
+    reset_visual_recovery();
+    if (leg_velocity_mode != LegVelocityMode::IMU_ONLY) {
+      change_mode(LegVelocityMode::IMU_ONLY, update_result.reason);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(leg_velocity_mutex);
+    leg_velocity_status.mode = leg_velocity_mode;
+    leg_velocity_status.update_accepted = update_result.accepted;
+    leg_velocity_status.chi2 = update_result.chi2;
+    leg_velocity_status.chi2_threshold = update_result.chi2_threshold;
+    leg_velocity_status.innovation = update_result.innovation;
+    leg_velocity_status.reason = update_result.reason;
+  }
+  PRINT_INFO(
+      "[OV-LEG] t=%.6f mode=%s active=%zu visual_accepted=%zu age=%.3f accepted=%d "
+      "innovation=[%.4f %.4f %.4f %.4f] chi2=%.3f/%.3f lever=[%.4f %.4f %.4f] reason=%s\n",
+      visual_stats.timestamp, leg_velocity_mode_name(leg_velocity_mode), visual_stats.active_observations,
+      visual_stats.accepted_total(), visual_stats.timestamp - selected.timestamp - params.leg_velocity_time_offset,
+      update_result.accepted, update_result.innovation(0), update_result.innovation(1), update_result.innovation(2),
+      update_result.innovation(3), update_result.chi2, update_result.chi2_threshold, r_IB_in_I(0), r_IB_in_I(1),
+      r_IB_in_I(2), update_result.reason.c_str());
 }
 
 void VioManager::feed_measurement_simulation(double timestamp, const std::vector<int> &camids,
@@ -520,15 +838,21 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // Pass them to our MSCKF updater
   // NOTE: if we have more then the max, we select the "best" ones (i.e. max tracks) for this update
   // NOTE: this should only really be used if you want to track a lot of features, or have limited computational resources
+  const size_t msckf_candidates = featsup_MSCKF.size();
   if ((int)featsup_MSCKF.size() > state->_options.max_msckf_in_update)
     featsup_MSCKF.erase(featsup_MSCKF.begin(), featsup_MSCKF.end() - state->_options.max_msckf_in_update);
+  const size_t msckf_selected = featsup_MSCKF.size();
   updaterMSCKF->update(state, featsup_MSCKF);
+  // Updater 会原地移除清理、三角化或卡方检验失败的特征，剩余数量即实际参与更新的数量。
+  const size_t msckf_accepted = featsup_MSCKF.size();
   propagator->invalidate_cache();
   rT4 = boost::posix_time::microsec_clock::local_time();
 
   // Perform SLAM delay init and update
   // NOTE: that we provide the option here to do a *sequential* update
   // NOTE: this will be a lot faster but won't be as accurate.
+  const size_t slam_update_candidates = feats_slam_UPDATE.size();
+  const size_t slam_init_candidates = feats_slam_DELAYED.size();
   std::vector<std::shared_ptr<Feature>> feats_slam_UPDATE_TEMP;
   while (!feats_slam_UPDATE.empty()) {
     // Get sub vector of the features we will update with
@@ -543,9 +867,27 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     propagator->invalidate_cache();
   }
   feats_slam_UPDATE = feats_slam_UPDATE_TEMP;
+  const size_t slam_update_accepted = feats_slam_UPDATE.size();
   rT5 = boost::posix_time::microsec_clock::local_time();
   updaterSLAM->delayed_init(state, feats_slam_DELAYED);
+  const size_t slam_init_accepted = feats_slam_DELAYED.size();
   rT6 = boost::posix_time::microsec_clock::local_time();
+
+  // 只使用本帧真正进入 EKF 的视觉约束判断是否切换足式辅助，避免“仍有跟踪线但没有约束”的假健康状态。
+  VisualUpdateStats visual_stats;
+  visual_stats.timestamp = message.timestamp;
+  visual_stats.msckf_candidates = msckf_candidates;
+  visual_stats.msckf_selected = msckf_selected;
+  visual_stats.msckf_accepted = msckf_accepted;
+  visual_stats.slam_update_candidates = slam_update_candidates;
+  visual_stats.slam_init_candidates = slam_init_candidates;
+  visual_stats.slam_update_accepted = slam_update_accepted;
+  visual_stats.slam_init_accepted = slam_init_accepted;
+  const auto active_tracks_for_stats = trackFEATS->get_last_obs();
+  for (const auto &camera_tracks : active_tracks_for_stats) {
+    visual_stats.active_observations += camera_tracks.second.size();
+  }
+  update_leg_velocity_aiding(visual_stats);
 
   //===================================================================================
   // Update our visualization feature set, and clean up the old features
@@ -627,6 +969,13 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   ss << ")" << std::endl;
   PRINT_DEBUG(BLUE "%s" RESET, ss.str().c_str());
 
+  // 汇总视觉观测漏斗；一行对应一个相机时间戳，便于和 IMU 冲击及轨迹漂移对齐。
+  PRINT_INFO(
+      "[OV-VIO] t=%.6f active_obs=%zu msckf_candidates=%zu msckf_selected=%zu msckf_accepted=%zu "
+      "slam_update=%zu/%zu slam_init=%zu/%zu slam_state=%zu clones=%zu\n",
+      message.timestamp, visual_stats.active_observations, msckf_candidates, msckf_selected, msckf_accepted, slam_update_accepted,
+      slam_update_candidates, slam_init_accepted, slam_init_candidates, state->_features_SLAM.size(), state->_clones_IMU.size());
+
   // Finally if we are saving stats to file, lets save it to file
   if (params.record_timing_information && of_statistics.is_open()) {
     // We want to publish in the IMU clock frame
@@ -650,17 +999,14 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
   timelastupdate = message.timestamp;
 
-  // Debug, print our current state
-  PRINT_INFO("q_GtoI = %.3f,%.3f,%.3f,%.3f | p_IinG = %.3f,%.3f,%.3f | dist = %.2f (meters)\n", state->_imu->quat()(0),
-             state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3), state->_imu->pos()(0), state->_imu->pos()(1),
-             state->_imu->pos()(2), distance);
-  PRINT_INFO("bg = %.4f,%.4f,%.4f | ba = %.4f,%.4f,%.4f\n", state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2),
-             state->_imu->bias_a()(0), state->_imu->bias_a()(1), state->_imu->bias_a()(2));
-
-  // Debug for camera imu offset
-  if (state->_options.do_calib_camera_timeoffset) {
-    PRINT_INFO("camera-imu timeoffset = %.5f\n", state->_calib_dt_CAMtoIMU->value()(0));
-  }
+  // 单行记录核心状态，避免原有多行输出难以按时间戳关联。
+  PRINT_INFO(
+      "[OV-STATE] t=%.6f q=%.5f,%.5f,%.5f,%.5f p=%.5f,%.5f,%.5f v=%.5f,%.5f,%.5f "
+      "bg=%.6f,%.6f,%.6f ba=%.6f,%.6f,%.6f camimu_dt=%.6f dist=%.3f\n",
+      message.timestamp, state->_imu->quat()(0), state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3),
+      state->_imu->pos()(0), state->_imu->pos()(1), state->_imu->pos()(2), state->_imu->vel()(0), state->_imu->vel()(1),
+      state->_imu->vel()(2), state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2), state->_imu->bias_a()(0),
+      state->_imu->bias_a()(1), state->_imu->bias_a()(2), state->_calib_dt_CAMtoIMU->value()(0), distance);
 
   // Debug for camera intrinsics
   if (state->_options.do_calib_camera_intrinsics) {

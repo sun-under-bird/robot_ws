@@ -164,6 +164,14 @@ public:
   }
 
   /**
+   * @brief 获取指定 IMU 时刻的原始观测，必要时在线性插值。
+   * @param timestamp 目标 IMU 时钟时间
+   * @param measurement 返回的原始 IMU 观测
+   * @return 缓存中存在覆盖目标时刻的数据时返回 true
+   */
+  bool get_interpolated_imu(double timestamp, ov_core::ImuData &measurement);
+
+  /**
    * @brief compute the Jacobians for Dw
    *
    * See @ref analytical_linearization_imu for details.

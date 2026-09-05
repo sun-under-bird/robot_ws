@@ -1,4 +1,4 @@
-"""启动 GO2 D435i 的建图、重定位和 Nav2 导航."""
+"""在 GO2 上使用原生 D435i 双目与原生 WIT IMU，复用 OpenVINS/RTAB-Map 管线并可选启动 Nav2。"""
 
 import os
 
@@ -27,9 +27,12 @@ def package_launch(package_name, launch_name):
 
 
 def generate_launch_description():
-    """组合外部 D435i、通用建图/重定位管线以及可选 Nav2 导航."""
-    package_share = get_package_share_directory('robot_slam_bringup')
-    config_dir = os.path.join(package_share, 'config')
+    """组合原生 D435i、原生 WIT IMU、通用建图/重定位管线以及可选 Nav2 导航."""
+    legacy_package_share = get_package_share_directory(
+        'stereo_slam_legacy_bringup')
+    nav2_package_share = get_package_share_directory('robot_slam_bringup')
+    legacy_config_dir = os.path.join(legacy_package_share, 'config')
+    nav2_config_dir = os.path.join(nav2_package_share, 'config')
 
     params_file = LaunchConfiguration('params_file')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
@@ -45,7 +48,6 @@ def generate_launch_description():
     map_frame_id = LaunchConfiguration('map_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
     publish_map_tf = LaunchConfiguration('publish_map_tf')
-    publish_camera_imu_tf = LaunchConfiguration('publish_camera_imu_tf')
     left_image_topic = LaunchConfiguration('left_image_topic')
     right_image_topic = LaunchConfiguration('right_image_topic')
     left_info_topic = LaunchConfiguration('left_info_topic')
@@ -54,6 +56,8 @@ def generate_launch_description():
     orientation_imu_topic = LaunchConfiguration('orientation_imu_topic')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_info_topic = LaunchConfiguration('odom_info_topic')
+    leg_velocity_enabled = LaunchConfiguration('leg_velocity_enabled')
+    leg_odom_topic = LaunchConfiguration('leg_odom_topic')
     startup_delay = LaunchConfiguration('startup_delay')
     nav2_startup_delay = LaunchConfiguration('nav2_startup_delay')
     nav2_autostart = LaunchConfiguration('nav2_autostart')
@@ -64,12 +68,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'params_file',
             default_value=os.path.join(
-                config_dir, 'openvins_rtabmap.yaml'),
+                legacy_config_dir, 'rtabmap_openvins_mapping_params.yaml'),
             description='D435i OpenVINS 与 RTAB-Map 参数文件。',
         ),
         DeclareLaunchArgument(
             'nav2_params_file',
-            default_value=os.path.join(config_dir, 'go2_nav2.yaml'),
+            default_value=os.path.join(
+                nav2_config_dir, 'go2_nav2_refactor.yaml'),
             description='GO2 使用的 Nav2 Humble 参数文件。',
         ),
         DeclareLaunchArgument(
@@ -109,6 +114,16 @@ def generate_launch_description():
             description='是否启动 rtabmap_viz；GO2 无桌面运行时建议关闭。',
         ),
         DeclareLaunchArgument(
+            'leg_velocity_enabled',
+            default_value='true',
+            description='视觉退化时是否启用 OpenVINS 足式速度辅助。',
+        ),
+        DeclareLaunchArgument(
+            'leg_odom_topic',
+            default_value='/odom_leg',
+            description='足式运动学里程计话题。',
+        ),
+        DeclareLaunchArgument(
             'use_sim_time',
             default_value='false',
             description='是否使用 /clock 仿真时钟。',
@@ -144,19 +159,14 @@ def generate_launch_description():
             description='是否由 RTAB-Map 发布 map 到 odom 的 TF。',
         ),
         DeclareLaunchArgument(
-            'publish_camera_imu_tf',
-            default_value='true',
-            description='是否发布 camera_link 到外置 WIT imu_link 的标定 TF。',
-        ),
-        DeclareLaunchArgument(
             'left_image_topic',
             default_value='/camera/camera/infra1/image_rect_raw',
-            description='D435i 驱动原生左红外矫正图像话题。',
+            description='D435i 左红外校正图像话题。',
         ),
         DeclareLaunchArgument(
             'right_image_topic',
             default_value='/camera/camera/infra2/image_rect_raw',
-            description='D435i 驱动原生右红外矫正图像话题。',
+            description='D435i 右红外校正图像话题。',
         ),
         DeclareLaunchArgument(
             'left_info_topic',
@@ -166,19 +176,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'right_info_topic',
             default_value='/camera/camera/infra2/camera_info',
-            description='D435i 驱动发布的原生右红外 CameraInfo 话题。',
+            description='D435i 驱动原生发布的右红外 CameraInfo 话题。',
         ),
         DeclareLaunchArgument(
             'imu_topic',
             default_value='/imu/data_raw',
-            description='WIT 节点发布的原始角速度和加速度话题。',
+            description='WIT IMU 驱动原生话题，直接供 OpenVINS 使用，不做转发。',
         ),
         DeclareLaunchArgument(
             'orientation_imu_topic',
             default_value='/rtabmap/unused_orientation_imu',
             description=(
-                'RTAB-Map 可选的姿态 IMU；OpenVINS 已直接使用 WIT 原始 '
-                'IMU，默认保持为未发布话题，避免重复施加 IMU 约束。'
+                'RTAB-Map 异步姿态 IMU 输入；当前不使用，默认保持为未发布话题。'
             ),
         ),
         DeclareLaunchArgument(
@@ -197,7 +206,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'startup_delay',
             default_value='1.0',
-            description='等待外部 D435i、WIT IMU 和 TF 稳定后启动 VIO/RTAB-Map 的秒数。',
+            description='等待外部 D435i 和 TF 稳定后启动 VIO/RTAB-Map 的秒数。',
         ),
         DeclareLaunchArgument(
             'nav2_startup_delay',
@@ -206,8 +215,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'nav2_autostart',
-            default_value='true',
-            description='是否自动激活 Nav2 生命周期节点。',
+            default_value='false',
+            description=(
+                '是否自动激活 Nav2 生命周期节点；仅在 navigation=true 时生效。'
+            ),
         ),
         DeclareLaunchArgument(
             'nav2_use_composition',
@@ -223,11 +234,35 @@ def generate_launch_description():
         ),
     ]
 
-    # 直接消费 D435i 驱动的原生矫正双目与 CameraInfo，不再改写消息。
+
+    kalibr_extrinsic_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_to_wit_imu_kalibr_extrinsic_tf',
+        output='screen',
+        arguments=[
+            '--x', '-0.034675482490387',
+            '--y', '-0.020943006517538',
+            '--z', '0.008633613611199',
+            '--qx', '0.707265522596187',
+            '--qy', '-0.005278522343855',
+            '--qz', '-0.706848217515136 ',
+            '--qw', '0.010640260536412',
+            '--frame-id', 'camera_link',
+            '--child-frame-id', 'imu_link',
+        ],
+    )
+
+
+    # D435i 图像/CameraInfo 与 WIT IMU 均直接使用各自驱动的原生话题。
+    # 不启动 relay，不改写 IMU header.frame_id，也不生成 CameraInfo 中间话题。
+
+    # 与 HB 启动文件使用同一个公共建图管线；D435i 的红外图像已经校正，
+    # 因此 OpenVINS 和 RTAB-Map 可以消费同一组 image_rect_raw。
     mapping_launch = IncludeLaunchDescription(
         package_launch(
-            'robot_slam_bringup',
-            'openvins_rtabmap.launch.py'),
+            'stereo_slam_legacy_bringup',
+            'rtabmap_openvins_stereo_mapping.launch.py'),
         launch_arguments={
             'params_file': params_file,
             'frame_id': base_frame_id,
@@ -235,7 +270,6 @@ def generate_launch_description():
             'map_frame_id': map_frame_id,
             'publish_odom_tf': publish_odom_tf,
             'publish_map_tf': publish_map_tf,
-            'publish_camera_imu_tf': publish_camera_imu_tf,
             'planar_mode': planar_mode,
             'localization': localization,
             'use_sim_time': use_sim_time,
@@ -248,16 +282,17 @@ def generate_launch_description():
             'right_image_topic': right_image_topic,
             'left_info_topic': left_info_topic,
             'right_info_topic': right_info_topic,
-            # OpenVINS 直接订阅 WIT 原始 IMU，不再经过 frame_id 转发。
             'imu_topic': imu_topic,
-            # RTAB-Map 姿态异步接口与 OpenVINS 的原始 IMU 输入保持分离。
+            # 当前不向 RTAB-Map 提供异步 orientation IMU。
             'orientation_imu_topic': orientation_imu_topic,
             'odom_topic': odom_topic,
             'odom_info_topic': odom_info_topic,
+            'leg_velocity_enabled': leg_velocity_enabled,
+            'leg_odom_topic': leg_odom_topic,
             # 使用绝对话题名与 GO2 Nav2 参数保持一致。
             'map_topic': '/map',
-            'local_grid_obstacle_topic': '/rtabmap/local_grid_obstacle',
-            'local_grid_ground_topic': '/rtabmap/local_grid_ground',
+            'local_grid_obstacle_topic': '/local_grid_obstacle',
+            'local_grid_ground_topic': '/local_grid_ground',
             'database_path': database_path,
             'delete_db_on_start': delete_db_on_start,
             'launch_viz': launch_viz,
@@ -271,6 +306,7 @@ def generate_launch_description():
         replacements={
             'GO2_MAP_FRAME': map_frame_id,
             'GO2_ODOM_FRAME': odom_frame_id,
+            'SLAM_WS_SHARE': nav2_package_share,
         },
     )
     rewritten_nav2_params = RewrittenYaml(
@@ -326,6 +362,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
+        kalibr_extrinsic_tf,
         delayed_mapping_pipeline,
         delayed_nav2,
     ])

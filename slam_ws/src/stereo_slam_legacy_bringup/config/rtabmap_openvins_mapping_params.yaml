@@ -36,7 +36,7 @@ openvins_stereo_odometry:
     # ===== OpenVINS tracker / front-end =====
     "OdomOpenVINS/UseStereo": "true"
     "OdomOpenVINS/UseKLT": "true"
-    "OdomOpenVINS/NumPts": "500"
+    "OdomOpenVINS/NumPts": "800"
     "OdomOpenVINS/MinPxDist": "10"
     # OpenVINS 包装层还会读取这些通用视觉参数。
     "FAST/Threshold": "10"
@@ -94,7 +94,7 @@ openvins_stereo_odometry:
     "OdomOpenVINS/InitDynMinRecCond": "1e-15"
 
     # ===== OpenVINS ZUPT =====
-    "OdomOpenVINS/TryZUPT": "true"
+    "OdomOpenVINS/TryZUPT": "false"
     "OdomOpenVINS/ZUPTChi2Multiplier": "0.5"
     # 参数名源码里就是 Velodicy，不是 Velocity。
     "OdomOpenVINS/ZUPTMaxVelodicy": "0.1"
@@ -104,10 +104,10 @@ openvins_stereo_odometry:
 
     # ===== OpenVINS IMU / visual measurement noise =====
     # 当前为旧 WIT IMU 标定值；GO2 使用 D435i 时应以实机 Allan 标定结果替换，
-    "OdomOpenVINS/AccelerometerNoiseDensity": "0.008"
-    "OdomOpenVINS/AccelerometerRandomWalk": "0.0004"
-    "OdomOpenVINS/GyroscopeNoiseDensity": "0.0001"
-    "OdomOpenVINS/GyroscopeRandomWalk": "0.00001"
+    "OdomOpenVINS/AccelerometerNoiseDensity": "0.08"
+    "OdomOpenVINS/AccelerometerRandomWalk": "0.004"
+    "OdomOpenVINS/GyroscopeNoiseDensity": "0.001"
+    "OdomOpenVINS/GyroscopeRandomWalk": "0.0001"
     # "OdomOpenVINS/AccelerometerNoiseDensity": "0.01"
     # "OdomOpenVINS/AccelerometerRandomWalk": "0.001"
     # "OdomOpenVINS/GyroscopeNoiseDensity": "0.001"
@@ -205,7 +205,7 @@ rtabmap:
     # ===== registration used to verify loop closures =====
     "Reg/Strategy": "0"
     # 地面机器人只做 2D 导航可以改 true；四足/无人机/手持建图一般保持 false。
-    "Reg/Force3DoF": "false"
+    "Reg/Force3DoF": "true"
     "Reg/RepeatOnce": "true"
     "Vis/MinInliers": "10"
     "Vis/Iterations": "300"
@@ -269,7 +269,7 @@ rtabmap:
     "Grid/CellSize": "0.05"
     # 当前约49.4 mm基线在3 m外深度误差增长很快，先保留可靠近场点云。
     "Grid/RangeMin": "0.3"
-    "Grid/RangeMax": "3.0"
+    "Grid/RangeMax": "3.5"
     # 4与纯双目配置默认值一致；相对2会将每帧点数降低到约四分之一。
     "Grid/DepthDecimation": "4"
     "Grid/PreVoxelFiltering": "true"
@@ -283,8 +283,8 @@ rtabmap:
     "Grid/NormalK": "20"
     "Grid/ClusterRadius": "0.1"
     "Grid/MinClusterSize": "10"
-    "Grid/MaxObstacleHeight": "0.0"
-    "Grid/MinGroundHeight": "0.0"
+    "Grid/MaxObstacleHeight": "0.3"
+    "Grid/MinGroundHeight": "-0.3"
     "Grid/MaxGroundHeight": "0.0"
     "Grid/FootprintLength": "0.0"
     "Grid/FootprintWidth": "0.0"

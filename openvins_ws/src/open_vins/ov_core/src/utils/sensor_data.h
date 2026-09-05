@@ -47,6 +47,24 @@ struct ImuData {
 };
 
 /**
+ * @brief 足式里程计提供的 base_link 三维速度和偏航角速度观测。
+ */
+struct LegVelocityData {
+
+  /// 消息时间戳，时间偏移由 VioManager 在选取观测时统一处理
+  double timestamp = -1.0;
+
+  /// [vx, vy, vz, yaw_rate]，全部表达在 base_link 坐标系
+  Eigen::Matrix<double, 4, 1> measurement = Eigen::Matrix<double, 4, 1>::Zero();
+
+  /// 从 ROS twist 协方差抽取的完整四维协方差
+  Eigen::Matrix<double, 4, 4> covariance = Eigen::Matrix<double, 4, 4>::Identity();
+
+  /// 允许按时间戳排序足式观测
+  bool operator<(const LegVelocityData &other) const { return timestamp < other.timestamp; }
+};
+
+/**
  * @brief Struct for a collection of camera measurements.
  *
  * For each image we have a camera id and timestamp that it occured at.
