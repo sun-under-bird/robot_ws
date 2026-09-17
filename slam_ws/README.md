@@ -4,6 +4,7 @@
 OpenVINS、RTAB-Map 和 Nav2。
 
 - `robot_slam_bringup`：当前推荐的 GO2/D435i 建图导航入口；
+- `person_3d_localization`：根据上层 bbox 和对齐深度生成一次性人体导航目标；
 - `stereo_slam_legacy_bringup`：精简后保留的 EKF 与 OpenVINS 兼容入口。
 
 本工作空间只保存项目自有的启动和参数。RTAB-Map、Nav2、OpenVINS 等第三方算法
