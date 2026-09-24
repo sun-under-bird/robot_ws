@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# 一键记录 Go2 UWB 跟随避障实机测试数据，并用事件标记对齐问题发生时刻。
+# 一键记录 Lite3 UWB 跟随避障实机测试数据，并用事件标记对齐问题发生时刻。
 set -Eeo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

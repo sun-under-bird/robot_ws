@@ -1,7 +1,8 @@
-# Go2 UWB 双目跟随避障 v1.0.0
+# Lite3 UWB 双目跟随避障 v1.0.0
 
 本工作空间保留已经用于实机验证的 UWB 跟随与双目局部避障链路，目标平台为
-Unitree Go2、Ubuntu 22.04 和 ROS 2 Humble。
+DEEP Robotics Lite3、Ubuntu 22.04 和 ROS 2 Humble。为兼容既有上层接口，ROS
+包名和 `/go2/...` 行为接口命名暂时保留，底盘话题、frame 和诊断标识均可由 launch 覆盖。
 
 ## 保留的 ROS 2 包
 
@@ -141,7 +142,7 @@ colcon test-result --verbose
 
 脚本支持按键标记异常向前、转向、误停车、反光假障碍、抖动和 UWB 丢数；详细用法见
 [跟随避障实机测试记录说明](docs/follow_avoidance_test_recording.md)，可直接移交测试人员的
-命令清单见 [Go2 跟随避障测试录制命令](docs/follow_test_recording_commands.md)。
+命令清单见 [Lite3 跟随避障测试录制命令](docs/follow_test_recording_commands.md)。
 
 ## 目录
 
