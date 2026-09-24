@@ -12,6 +12,8 @@ COMPRESSION="none"
 DURATION_SEC=0
 NON_INTERACTIVE=false
 MARKER_TOPIC="/go2_uwb_local_follow/test_event"
+ODOM_TOPIC="/leg_odom2"
+CMD_VEL_TOPIC="/cmd_vel"
 MAX_BAG_SIZE_BYTES=2147483648
 START_TIME_ISO=""
 SESSION_DIR=""
@@ -34,6 +36,8 @@ print_usage()
   --output-root DIR    记录根目录，默认工作区/test_records
   --compress           使用单线程 zstd 文件压缩（会增加 CPU）
   --duration SEC       指定自动停止秒数，0 表示按 q 或 Ctrl+C 停止
+  --odom-topic TOPIC   底盘里程计话题，默认 /leg_odom2
+  --cmd-vel-topic TOPIC 最终底盘速度话题，默认 /cmd_vel
   --non-interactive    不读取按键，使用 Ctrl+C 或 --duration 停止
   -h, --help           显示帮助
 
@@ -84,6 +88,16 @@ parse_arguments()
       --duration)
         [[ $# -ge 2 ]] || { echo "错误：--duration 缺少参数" >&2; exit 2; }
         DURATION_SEC="$2"
+        shift 2
+        ;;
+      --odom-topic)
+        [[ $# -ge 2 ]] || { echo "错误：--odom-topic 缺少参数" >&2; exit 2; }
+        ODOM_TOPIC="$2"
+        shift 2
+        ;;
+      --cmd-vel-topic)
+        [[ $# -ge 2 ]] || { echo "错误：--cmd-vel-topic 缺少参数" >&2; exit 2; }
+        CMD_VEL_TOPIC="$2"
         shift 2
         ;;
       --non-interactive)
@@ -363,7 +377,7 @@ main()
     /uwb/target_adapter_diagnostics
     /go2_uwb_local_follow/nominal_cmd
     /go2_uwb_local_follow/follow_diagnostics
-    /odom_leg
+    "${ODOM_TOPIC}"
     /local_grid_obstacle
     /local_depth_observation
     /local_rolling_obstacle
@@ -373,7 +387,7 @@ main()
     /go2_uwb_local_follow/final_cmd
     /go2_uwb_local_follow/planner_diagnostics
     /go2_uwb_local_follow/selected_path
-    /cmd_vel
+    "${CMD_VEL_TOPIC}"
     /cmd_vel_planned
     /cmd_vel_follow
     /tf

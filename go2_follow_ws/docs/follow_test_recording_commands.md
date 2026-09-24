@@ -35,7 +35,9 @@ source install/local_setup.bash
 ```bash
 ./scripts/record_follow_test.sh \
   --name follow_test \
-  --profile core
+  --profile core \
+  --odom-topic /leg_odom2 \
+  --cmd-vel-topic /cmd_vel
 ```
 
 脚本启动后会持续记录。发现问题时直接按对应按键，测试完成后按 `q`：

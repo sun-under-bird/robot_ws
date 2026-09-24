@@ -18,7 +18,9 @@ source scripts/setup_robot_env.sh
 cd "${ROBOT_WS_ROOT}/go2_follow_ws"
 source /opt/ros/humble/setup.bash
 source install/local_setup.bash
-./scripts/record_follow_test.sh --name rear_crossing
+./scripts/record_follow_test.sh --name rear_crossing \
+  --odom-topic /leg_odom2 \
+  --cmd-vel-topic /cmd_vel
 ```
 
 记录过程中直接按键：
