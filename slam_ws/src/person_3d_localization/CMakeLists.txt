@@ -12,7 +12,9 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(image_geometry REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -27,6 +29,20 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(bbox_depth_processor
   src/bbox_depth_processor.cpp
+)
+
+add_library(goal_candidate_selector
+  src/goal_candidate_selector.cpp
+)
+target_include_directories(goal_candidate_selector PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(goal_candidate_selector
+  geometry_msgs
+  nav2_msgs
+  tf2
+  tf2_geometry_msgs
 )
 target_include_directories(bbox_depth_processor PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -47,21 +63,23 @@ target_include_directories(bbox_depth_goal_node PRIVATE
 ament_target_dependencies(bbox_depth_goal_node
   geometry_msgs
   image_geometry
+  nav2_msgs
   rclcpp
+  rclcpp_action
   sensor_msgs
   std_msgs
   tf2
   tf2_geometry_msgs
   tf2_ros
 )
-target_link_libraries(bbox_depth_goal_node bbox_depth_processor)
+target_link_libraries(bbox_depth_goal_node bbox_depth_processor goal_candidate_selector)
 
 # 同一包内节点需要显式链接本包生成的服务类型支持库。
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(bbox_depth_goal_node "${cpp_typesupport_target}")
 
-install(TARGETS bbox_depth_processor bbox_depth_goal_node
+install(TARGETS bbox_depth_processor goal_candidate_selector bbox_depth_goal_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -92,6 +110,17 @@ if(BUILD_TESTING)
     ament_target_dependencies(test_bbox_depth_processor
       image_geometry
       sensor_msgs
+    )
+  endif()
+
+  ament_add_gtest(test_goal_candidate_selector
+    test/test_goal_candidate_selector.cpp
+  )
+  if(TARGET test_goal_candidate_selector)
+    target_link_libraries(test_goal_candidate_selector goal_candidate_selector)
+    ament_target_dependencies(test_goal_candidate_selector
+      geometry_msgs
+      nav2_msgs
     )
   endif()
 endif()

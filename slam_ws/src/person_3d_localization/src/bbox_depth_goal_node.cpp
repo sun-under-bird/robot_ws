@@ -19,25 +19,32 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <deque>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
+#include <nav2_msgs/msg/costmap.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "person_3d_localization/bbox_depth_processor.hpp"
+#include "person_3d_localization/goal_candidate_selector.hpp"
 #include "person_3d_localization/srv/locate_from_bbox.hpp"
 
 namespace person_3d_localization
@@ -69,7 +76,24 @@ public:
       "max_timestamp_difference", 0.05);
     max_latest_depth_age_ = declare_parameter<double>("max_latest_depth_age", 0.5);
     tf_timeout_ = declare_parameter<double>("tf_timeout", 0.3);
-    cache_size_ = declare_parameter<int>("cache_size", 60);
+    cache_size_ = declare_parameter<int>("cache_size", 150);
+    costmap_topic_ = declare_parameter<std::string>(
+      "costmap_topic", "/global_costmap/costmap_raw");
+    planner_action_ = declare_parameter<std::string>(
+      "planner_action", "/compute_path_to_pose");
+    max_costmap_age_ = declare_parameter<double>("max_costmap_age", 3.0);
+    planner_server_timeout_ = declare_parameter<double>("planner_server_timeout", 1.0);
+    candidate_plan_timeout_ = declare_parameter<double>("candidate_plan_timeout", 3.0);
+    candidate_search_timeout_ = declare_parameter<double>("candidate_search_timeout", 20.0);
+    path_endpoint_tolerance_ = declare_parameter<double>("path_endpoint_tolerance", 0.25);
+    max_planning_candidates_ = declare_parameter<int>("max_planning_candidates", 48);
+
+    GoalSearchConfig goal_search_config;
+    goal_search_config.angular_samples = declare_parameter<int>("angular_samples", 16);
+    goal_search_config.radial_levels = declare_parameter<int>("radial_levels", 3);
+    goal_search_config.radial_step = declare_parameter<double>("radial_step", 0.3);
+    goal_search_config.clearance_radius = declare_parameter<double>("clearance_radius", 0.45);
+    goal_search_config.max_goal_cost = declare_parameter<int>("max_goal_cost", 199);
 
     BboxDepthConfig processor_config;
     processor_config.depth_min = declare_parameter<double>("depth_min", 0.3);
@@ -89,8 +113,13 @@ public:
 
     ValidateParameters();
     processor_ = std::make_unique<BboxDepthProcessor>(processor_config);
+    goal_selector_ = std::make_unique<GoalCandidateSelector>(goal_search_config);
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    // 路径规划 action 必须独立于阻塞中的定位服务回调执行。
+    planner_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    planner_client_ = rclcpp_action::create_client<nav2_msgs::action::ComputePathToPose>(
+      this, planner_action_, planner_callback_group_);
 
     const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(10);
     depth_subscription_ = create_subscription<sensor_msgs::msg::Image>(
@@ -99,6 +128,11 @@ public:
     camera_info_subscription_ = create_subscription<sensor_msgs::msg::CameraInfo>(
       camera_info_topic_, sensor_qos,
       std::bind(&BboxDepthGoalNode::OnCameraInfo, this, std::placeholders::_1));
+    rclcpp::SubscriptionOptions costmap_options;
+    costmap_options.callback_group = planner_callback_group_;
+    costmap_subscription_ = create_subscription<nav2_msgs::msg::Costmap>(
+      costmap_topic_, rclcpp::QoS(1).reliable(),
+      std::bind(&BboxDepthGoalNode::OnCostmap, this, std::placeholders::_1), costmap_options);
 
     person_point_publisher_ = create_publisher<geometry_msgs::msg::PointStamped>(
       person_point_topic_, rclcpp::QoS(1).reliable());
@@ -119,18 +153,25 @@ private:
   using LocateFromBbox = person_3d_localization::srv::LocateFromBbox;
   using DepthPtr = sensor_msgs::msg::Image::ConstSharedPtr;
   using CameraInfoPtr = sensor_msgs::msg::CameraInfo::ConstSharedPtr;
+  using CostmapPtr = nav2_msgs::msg::Costmap::ConstSharedPtr;
+  using ComputePathToPose = nav2_msgs::action::ComputePathToPose;
 
   // 校验服务、缓存、时间同步和坐标系参数。
   void ValidateParameters() const
   {
     if (depth_topic_.empty() || camera_info_topic_.empty() || service_name_.empty() ||
-      target_frame_.empty() || robot_frame_.empty())
+      target_frame_.empty() || robot_frame_.empty() || costmap_topic_.empty() ||
+      planner_action_.empty())
     {
       throw std::invalid_argument("话题、服务和坐标系名称不得为空");
     }
     if (!(default_stand_off_distance_ > 0.0) || arrival_tolerance_ < 0.0 ||
       !(max_timestamp_difference_ > 0.0) || !(max_latest_depth_age_ > 0.0) ||
-      !(tf_timeout_ > 0.0) || cache_size_ <= 0)
+      !(tf_timeout_ > 0.0) || cache_size_ <= 0 ||
+      !(max_costmap_age_ > 0.0) || !(planner_server_timeout_ > 0.0) ||
+      !(candidate_plan_timeout_ > 0.0) || !(candidate_search_timeout_ > 0.0) ||
+      !(path_endpoint_tolerance_ > 0.0) ||
+      max_planning_candidates_ <= 0)
     {
       throw std::invalid_argument("安全距离、时间容差、TF 超时或缓存大小不合法");
     }
@@ -154,6 +195,13 @@ private:
     while (camera_info_cache_.size() > static_cast<std::size_t>(cache_size_)) {
       camera_info_cache_.pop_front();
     }
+  }
+
+  // 缓存 Nav2 发布的完整全局代价地图，供本次目标筛选使用。
+  void OnCostmap(const CostmapPtr message)
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    latest_costmap_ = message;
   }
 
   // 把 ROS 时间戳转换为整数纳秒，避免不同 ClockType 参与直接比较。
@@ -223,7 +271,7 @@ private:
     return closest;
   }
 
-  // 统一填写失败响应，确保上层能够区分深度、请求和 TF 错误。
+  // 统一填写失败响应并清除半成品坐标，防止上层误用不可达目标。
   static void SetFailure(
     const std::shared_ptr<LocateFromBbox::Response> & response,
     uint8_t status,
@@ -233,9 +281,160 @@ private:
     response->navigation_required = false;
     response->status = status;
     response->message = message;
+    response->person_point = geometry_msgs::msg::PointStamped();
+    response->navigation_goal = geometry_msgs::msg::PoseStamped();
   }
 
-  // 处理一次 bbox 定位请求并返回人体点和固定 Nav2 目标。
+  // 判断代价地图的时间戳是否仍可用于候选点安全判断。
+  bool IsCostmapFresh(const CostmapPtr & costmap) const
+  {
+    if (!costmap || costmap->header.frame_id != target_frame_) {
+      return false;
+    }
+    const double age = static_cast<double>(
+      now().nanoseconds() - StampNanoseconds(costmap->header.stamp)) * 1e-9;
+    return std::isfinite(age) && age >= -0.5 && age <= max_costmap_age_;
+  }
+
+  // 筛选已知安全候选点，并逐个向 Nav2 查询完整路径，找到第一个可达目标。
+  bool FindReachableGoal(
+    const geometry_msgs::msg::PointStamped & person,
+    double robot_x, double robot_y, double stand_off_distance,
+    const std::shared_ptr<LocateFromBbox::Response> & response)
+  {
+    CostmapPtr costmap;
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      costmap = latest_costmap_;
+    }
+    if (!IsCostmapFresh(costmap)) {
+      SetFailure(
+        response, LocateFromBbox::Response::STATUS_NAV2_UNAVAILABLE,
+        "全局代价地图缺失、过期或坐标系不匹配");
+      return false;
+    }
+    if (!planner_client_->wait_for_action_server(
+        std::chrono::duration<double>(planner_server_timeout_)))
+    {
+      SetFailure(
+        response, LocateFromBbox::Response::STATUS_NAV2_UNAVAILABLE,
+        "/compute_path_to_pose 不可用，请检查 Nav2 规划器");
+      return false;
+    }
+
+    const auto candidates = goal_selector_->Generate(
+      person, robot_x, robot_y, stand_off_distance);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(candidate_search_timeout_);
+    int planned_count = 0;
+    int safe_count = 0;
+    for (auto candidate : candidates) {
+      if (!goal_selector_->IsSafe(*costmap, candidate)) {
+        continue;
+      }
+      ++safe_count;
+      if (planned_count >= max_planning_candidates_ ||
+        std::chrono::steady_clock::now() >= deadline)
+      {
+        SetFailure(
+          response, LocateFromBbox::Response::STATUS_GOAL_SEARCH_TIMEOUT,
+          "候选点尚未全部验证，已达到路径规划次数或时间上限");
+        return false;
+      }
+      ++planned_count;
+
+      candidate.header.stamp = now();
+      ComputePathToPose::Goal plan_request;
+      plan_request.goal = candidate;
+      plan_request.planner_id = "GridBased";
+      plan_request.use_start = false;
+      try {
+        // 单线程服务回调在此等待；独立回调组由多线程执行器接收 action 结果。
+        auto goal_future = planner_client_->async_send_goal(plan_request);
+        const auto remaining_for_goal = deadline - std::chrono::steady_clock::now();
+        const auto goal_wait = std::min(
+          std::chrono::duration<double>(candidate_plan_timeout_),
+          std::chrono::duration<double>(remaining_for_goal));
+        if (goal_future.wait_for(goal_wait) != std::future_status::ready) {
+          SetFailure(
+            response, LocateFromBbox::Response::STATUS_GOAL_SEARCH_TIMEOUT,
+            "等待 Nav2 接受路径规划请求超时");
+          return false;
+        }
+        const auto goal_handle = goal_future.get();
+        if (!goal_handle) {
+          SetFailure(
+            response, LocateFromBbox::Response::STATUS_NAV2_UNAVAILABLE,
+            "Nav2 拒绝了路径规划请求");
+          return false;
+        }
+        auto result_future = planner_client_->async_get_result(goal_handle);
+        const auto remaining_for_result = deadline - std::chrono::steady_clock::now();
+        const auto result_wait = std::min(
+          std::chrono::duration<double>(candidate_plan_timeout_),
+          std::chrono::duration<double>(remaining_for_result));
+        if (result_future.wait_for(result_wait) != std::future_status::ready) {
+          planner_client_->async_cancel_goal(goal_handle);
+          SetFailure(
+            response, LocateFromBbox::Response::STATUS_GOAL_SEARCH_TIMEOUT,
+            "等待 Nav2 路径规划结果超时");
+          return false;
+        }
+        const auto result = result_future.get();
+        if (result.code != rclcpp_action::ResultCode::SUCCEEDED ||
+          !result.result || result.result->path.header.frame_id != target_frame_ ||
+          result.result->path.poses.empty())
+        {
+          continue;
+        }
+        // 规划器可能接受目标附近的路径端点，仍需确认实际端点也安全。
+        auto path_endpoint = result.result->path.poses.back();
+        path_endpoint.header.frame_id = target_frame_;
+        if (std::hypot(
+            path_endpoint.pose.position.x - candidate.pose.position.x,
+            path_endpoint.pose.position.y - candidate.pose.position.y) > path_endpoint_tolerance_)
+        {
+          continue;
+        }
+        CostmapPtr latest_costmap;
+        {
+          std::lock_guard<std::mutex> lock(cache_mutex_);
+          latest_costmap = latest_costmap_;
+        }
+        if (!IsCostmapFresh(latest_costmap)) {
+          SetFailure(
+            response, LocateFromBbox::Response::STATUS_NAV2_UNAVAILABLE,
+            "规划完成时全局代价地图已过期");
+          return false;
+        }
+        // 规划期间地图可能变化，必须在最新地图上复查目标和实际路径端点。
+        if (!goal_selector_->IsSafe(*latest_costmap, candidate) ||
+          !goal_selector_->IsSafe(*latest_costmap, path_endpoint))
+        {
+          continue;
+        }
+        candidate.header.stamp = now();
+        response->navigation_goal = candidate;
+        response->message = "成功找到安全且有路径的固定导航目标";
+        RCLCPP_INFO(
+          get_logger(), "导航候选点通过验证: 第 %d 次规划，代价地图安全候选 %d 个",
+          planned_count, safe_count);
+        return true;
+      } catch (const std::exception & exception) {
+        SetFailure(
+          response, LocateFromBbox::Response::STATUS_NAV2_UNAVAILABLE,
+          std::string("Nav2 路径规划调用异常: ") + exception.what());
+        return false;
+      }
+    }
+    SetFailure(
+      response, LocateFromBbox::Response::STATUS_NO_REACHABLE_GOAL,
+      safe_count == 0 ? "人体周围没有已知且安全的候选点" :
+      "人体周围的安全候选点均无法规划出路径");
+    return false;
+  }
+
+  // 处理一次 bbox 定位请求并返回人体点和已验证可达的固定 Nav2 目标。
   void OnLocate(
     const std::shared_ptr<LocateFromBbox::Request> request,
     std::shared_ptr<LocateFromBbox::Response> response)
@@ -359,29 +558,28 @@ private:
     response->navigation_goal.pose.position.z = 0.0;
     response->navigation_required = person_distance > stand_off_distance + arrival_tolerance_;
     if (response->navigation_required) {
-      const double direction_x = delta_x / person_distance;
-      const double direction_y = delta_y / person_distance;
-      response->navigation_goal.pose.position.x =
-        response->person_point.point.x - stand_off_distance * direction_x;
-      response->navigation_goal.pose.position.y =
-        response->person_point.point.y - stand_off_distance * direction_y;
+      if (!FindReachableGoal(
+          response->person_point, robot_x, robot_y, stand_off_distance, response))
+      {
+        return;
+      }
     } else {
       response->navigation_goal.pose.position.x = robot_x;
       response->navigation_goal.pose.position.y = robot_y;
+      // 已在安全距离内时不要求 Nav2 可用，保留原地朝向人体的可选目标。
+      const double goal_yaw = std::atan2(
+        response->person_point.point.y - robot_y,
+        response->person_point.point.x - robot_x);
+      tf2::Quaternion orientation;
+      orientation.setRPY(0.0, 0.0, goal_yaw);
+      response->navigation_goal.pose.orientation = tf2::toMsg(orientation);
     }
-
-    // 目标航向始终面向人体；即使无需平移，上层也可选择是否执行原地转向。
-    const double goal_yaw = std::atan2(
-      response->person_point.point.y - response->navigation_goal.pose.position.y,
-      response->person_point.point.x - response->navigation_goal.pose.position.x);
-    tf2::Quaternion orientation;
-    orientation.setRPY(0.0, 0.0, goal_yaw);
-    response->navigation_goal.pose.orientation = tf2::toMsg(orientation);
 
     response->success = true;
     response->status = LocateFromBbox::Response::STATUS_OK;
-    response->message = response->navigation_required ?
-      "成功生成固定导航目标" : "机器人已在安全距离内，无需平移导航";
+    if (!response->navigation_required) {
+      response->message = "机器人已在安全距离内，无需平移导航";
+    }
 
     person_point_publisher_->publish(response->person_point);
     navigation_goal_publisher_->publish(response->navigation_goal);
@@ -401,6 +599,8 @@ private:
   std::string service_name_;
   std::string person_point_topic_;
   std::string navigation_goal_topic_;
+  std::string costmap_topic_;
+  std::string planner_action_;
   std::string target_frame_;
   std::string robot_frame_;
   double default_stand_off_distance_{1.5};
@@ -408,16 +608,27 @@ private:
   double max_timestamp_difference_{0.05};
   double max_latest_depth_age_{0.5};
   double tf_timeout_{0.3};
-  int cache_size_{60};
+  double max_costmap_age_{3.0};
+  double planner_server_timeout_{1.0};
+  double candidate_plan_timeout_{3.0};
+  double candidate_search_timeout_{20.0};
+  double path_endpoint_tolerance_{0.25};
+  int cache_size_{150};
+  int max_planning_candidates_{48};
 
   std::mutex cache_mutex_;
   std::deque<DepthPtr> depth_cache_;
   std::deque<CameraInfoPtr> camera_info_cache_;
+  CostmapPtr latest_costmap_;
   std::unique_ptr<BboxDepthProcessor> processor_;
+  std::unique_ptr<GoalCandidateSelector> goal_selector_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  rclcpp::CallbackGroup::SharedPtr planner_callback_group_;
+  rclcpp_action::Client<ComputePathToPose>::SharedPtr planner_client_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_subscription_;
+  rclcpp::Subscription<nav2_msgs::msg::Costmap>::SharedPtr costmap_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr person_point_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr navigation_goal_publisher_;
   rclcpp::Service<LocateFromBbox>::SharedPtr locate_service_;
@@ -425,11 +636,13 @@ private:
 
 }  // namespace person_3d_localization
 
-// 初始化 ROS 2 并运行单次 bbox 深度定位节点。
+// 使用多线程执行器运行节点，让规划 action 与定位服务并发处理。
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<person_3d_localization::BboxDepthGoalNode>());
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+  executor.add_node(std::make_shared<person_3d_localization::BboxDepthGoalNode>());
+  executor.spin();
   rclcpp::shutdown();
   return 0;
 }

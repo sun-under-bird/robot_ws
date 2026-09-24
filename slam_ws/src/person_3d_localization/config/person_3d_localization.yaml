@@ -12,8 +12,23 @@ bbox_depth_goal_node:
     default_stand_off_distance: 1.5
     arrival_tolerance: 0.15
 
-    # 按原图时间戳匹配缓存深度；60 帧约覆盖 2 秒的 30 Hz 数据。
-    cache_size: 60
+    # 从 Nav2 全局代价地图筛选已知安全点，再通过规划 action 验证可达性。
+    costmap_topic: /global_costmap/costmap_raw
+    planner_action: /compute_path_to_pose
+    max_costmap_age: 3.0
+    planner_server_timeout: 1.0
+    candidate_plan_timeout: 3.0
+    candidate_search_timeout: 20.0
+    path_endpoint_tolerance: 0.25
+    max_planning_candidates: 48
+    angular_samples: 16
+    radial_levels: 3
+    radial_step: 0.3
+    clearance_radius: 0.45
+    max_goal_cost: 199
+
+    # 为约 2 秒的上层处理延迟留余量：150 帧在 30/60 Hz 下约覆盖 5/2.5 秒。
+    cache_size: 150
     max_timestamp_difference: 0.05
     max_latest_depth_age: 0.5
     tf_timeout: 0.3
